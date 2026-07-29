@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>same difference — gen preview</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; background: #000; overflow: hidden;
+    font-family: -apple-system, "Helvetica Neue", sans-serif; }
+
+  #stage { position: absolute; left: 0; right: 0; top: 0; bottom: 48px;
+    display: flex; align-items: center; justify-content: center; gap: 16px; padding: 16px; }
+  .slot { position: relative; flex: 0 1 auto; }
+  .slot canvas { display: block; background: #000; }
+  .slot .tag { position: absolute; left: 6px; top: 6px; color: #888; font-size: 11px;
+    background: rgba(0,0,0,.55); padding: 1px 6px; border-radius: 3px; }
+
+  #bar { position: fixed; left: 0; right: 0; bottom: 0; height: 48px;
+    display: flex; align-items: center; gap: 8px; padding: 0 12px;
+    background: #111; border-top: 1px solid #222; color: #eee; }
+  #bar.hidden { display: none; }
+  button { background: #2a2a2a; color: #eee; border: 1px solid #444; border-radius: 5px;
+    padding: 6px 12px; font-size: 13px; cursor: pointer; }
+  button:hover { background: #3a3a3a; }
+  button.active { background: #4a7dff; border-color: #4a7dff; }
+  .sep { width: 1px; height: 22px; background: #333; }
+  #hint { margin-left: auto; color: #666; font-size: 11px; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div id="bar">
+  <span id="clips"></span>
+  <span class="sep"></span>
+  <span id="sides"></span>
+  <span id="hint">クリック / F: 全画面　　L・R・B: 面切替</span>
+</div>
+
+<script src="gen_files.js"></script>
+<script>
+  // gen スクリプトを同期読込（読み終わってから下のUI構築が走る）
+  (window.GEN_FILES || []).forEach(function (f) {
+    document.write('<script src="' + f + '"><\/script>');
+  });
+</script>
+<script>
+/* gen クリップ単体プレビュー
+ * gen_files.js の一覧からクリップを選び、L / R / L+R で表示する。
+ * URLパラメータ: ?clip=G_01&side=LR （side: L | R | LR）
+ * このファイルは gen/ フォルダ内から開くこと（file:// 可）。 */
+(function () {
+  var q = new URLSearchParams(location.search);
+  var reg = window.GEN_CLIPS || {};
+  var ids = Object.keys(reg).sort();
+  var clipId = (q.get('clip') && reg[q.get('clip')]) ? q.get('clip') : (ids[0] || null);
+  var side = (q.get('side') || 'LR').toUpperCase();
+  if (['L', 'R', 'LR'].indexOf(side) < 0) side = 'LR';
+
+  var stage = document.getElementById('stage');
+  var clipsEl = document.getElementById('clips');
+  var sidesEl = document.getElementById('sides');
+  var bar = document.getElementById('bar');
+
+  var slots = [];   // [{cv, ctx, side}]
+
+  function rebuildStage() {
+    stage.innerHTML = '';
+    slots = [];
+    var arr = side === 'LR' ? ['L', 'R'] : [side];
+    arr.forEach(function (s) {
+      var d = document.createElement('div'); d.className = 'slot';
+      var cv = document.createElement('canvas'); cv.width = 1920; cv.height = 1080;
+      var tag = document.createElement('span'); tag.className = 'tag'; tag.textContent = s;
+      d.appendChild(cv); d.appendChild(tag);
+      stage.appendChild(d);
+      cv.addEventListener('click', toggleFS);
+      slots.push({ cv: cv, ctx: cv.getContext('2d'), side: s });
+    });
+    fit();
+  }
+
+  function fit() {
+    var barH = document.fullscreenElement ? 0 : 48;
+    var availW = innerWidth - 32, availH = innerHeight - barH - 32;
+    var n = Math.max(1, slots.length), gap = 16;
+    var w = (availW - gap * (n - 1)) / n;
+    var scale = Math.max(0.01, Math.min(w / 1920, availH / 1080));
+    slots.forEach(function (s) {
+      s.cv.style.width = (1920 * scale) + 'px';
+      s.cv.style.height = (1080 * scale) + 'px';
+    });
+  }
+
+  function rebuildBar() {
+    clipsEl.innerHTML = '';
+    sidesEl.innerHTML = '';
+    ids.forEach(function (id) {
+      var b = document.createElement('button');
+      b.textContent = id + (reg[id].name ? ' ' + reg[id].name : '');
+      b.classList.toggle('active', id === clipId);
+      b.onclick = function () { clipId = id; rebuildBar(); };
+      clipsEl.appendChild(b);
+    });
+    if (!ids.length) clipsEl.textContent = 'gen クリップがありません（gen_files.js に列挙）';
+    [['L', 'L'], ['R', 'R'], ['LR', 'L + R']].forEach(function (p) {
+      var b = document.createElement('button');
+      b.textContent = p[1];
+      b.classList.toggle('active', side === p[0]);
+      b.onclick = function () { side = p[0]; rebuildStage(); rebuildBar(); };
+      sidesEl.appendChild(b);
+    });
+  }
+
+  function toggleFS() {
+    if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(function () {});
+    else document.exitFullscreen();
+  }
+  document.addEventListener('fullscreenchange', function () {
+    bar.classList.toggle('hidden', !!document.fullscreenElement);
+    fit();
+  });
+  addEventListener('resize', fit);
+  document.addEventListener('keydown', function (e) {
+    var k = e.key.toLowerCase();
+    if (k === 'f') toggleFS();
+    if (k === 'l') { side = 'L'; rebuildStage(); rebuildBar(); }
+    if (k === 'r') { side = 'R'; rebuildStage(); rebuildBar(); }
+    if (k === 'b') { side = 'LR'; rebuildStage(); rebuildBar(); }
+  });
+
+  (function loop() {
+    var clip = clipId && reg[clipId];
+    if (clip) slots.forEach(function (s) { clip.draw(s.ctx, s.cv.width, s.cv.height, s.side); });
+    requestAnimationFrame(loop);
+  })();
+
+  rebuildStage();
+  rebuildBar();
+})();
+</script>
+</body>
+</html>

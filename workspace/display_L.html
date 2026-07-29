@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>same difference — L</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; background: #000; overflow: hidden; cursor: none; }
+  .panel { position: relative; width: 100vw; height: 100vh; background: #000; overflow: hidden; }
+  .panel video, .panel canvas {
+    position: absolute; top: 0; left: 0;
+    width: 100%; height: 100%;
+    object-fit: contain; display: block;
+    opacity: 0;
+  }
+  .panel video.show, .panel canvas.show { opacity: 1; }
+  #wait {
+    position: fixed; left: 50%; top: 50%; transform: translate(-50%,-50%);
+    color: #444; font-family: sans-serif; font-size: 14px;
+  }
+</style>
+</head>
+<body>
+<div class="panel">
+  <video class="layer" playsinline muted></video>
+  <video class="layer" playsinline muted></video>
+  <video class="layer" playsinline muted></video>
+  <video class="layer" playsinline muted></video>
+  <canvas id="genLayer" width="1920" height="1080"></canvas>
+</div>
+<div id="wait">コントロール画面の待機中…</div>
+
+<script>
+/* L表示ページ。
+   control から毎回 {cur, next, genFiles} を受け取る。
+   cur/next は 動画番号（数値）か gen クリップID（文字列 "G_01"）。
+   - vid: video レイヤーで再生（先読みあり）
+   - gen: canvas に毎フレーム描画（gen/◯◯.js を動的読込。先読み不要＝即出せる）
+   状態は「今表示している項目」だけ。詰まっても次の指示で必ず上書きされる。
+
+   音声について:
+   この画面は音を一切出さない（常時ミュート）。音楽は control 側が
+   WebAudio で映像とは独立に鳴らす。
+
+   ループについて:
+   ブラウザ標準の loop はループ点で一瞬止まるため、同じ動画を2要素に持たせて
+   交互再生する。終わる直前（LOOP_LEAD 秒前）に相方を先行スタートし、再生が
+   始まった瞬間に表示を切り替えることで、絶え間なくループする。
+   video 要素は4本: vA=表示中 / vB=ループ相方 / vP=次項目の先読み / vS=予備。
+   相方が間に合わない場合は標準 loop がフォールバックとして働く。 */
+const SIDE = 'L';
+const PAD = 2;
+const LOOP_LEAD = 0.15;   // 残りこの秒数になったら相方を先行スタート
+
+const layers = document.querySelectorAll('.layer');
+const genCanvas = document.getElementById('genLayer');
+const genCtx = genCanvas.getContext('2d');
+const waitEl = document.getElementById('wait');
+
+let vA = 0, vB = 1, vP = 2, vS = 3;  // layers 内の役割（インデックス）
+let shownNum = -1;     // 現在表示中の項目（数値 or "G_xx"）
+let targetNum = -1;    // 現在切り替え中の目標項目（読み込み中を含む）
+let gen = 0;           // 最新指示のみ有効にする世代番号
+let genClipId = null;  // canvas に描画中の gen クリップID（null なら描かない）
+let swapping = false;  // ループ切替の実行中フラグ
+
+function num(n){ return String(n).padStart(PAD, '0'); }
+function src(i){ return `${SIDE}_${num(i)}.mp4`; }
+function isGen(v){ return typeof v === 'string'; }
+function playMuted(v){ v.muted = true; v.play().catch(()=>{}); }
+
+/* ---- gen スクリプトの動的読込（control から受け取ったリスト） ---- */
+const genLoaded = {};
+function loadGenScripts(files){
+  (files || []).forEach((f)=>{
+    if (genLoaded[f]) return;
+    genLoaded[f] = true;
+    const s = document.createElement('script');
+    s.src = 'gen/' + f;
+    document.head.appendChild(s);
+  });
+}
+
+/* ---- gen 描画ループ（常駐。genClipId があるときだけ描く） ---- */
+(function genLoop(){
+  if (genClipId){
+    const clip = (window.GEN_CLIPS || {})[genClipId];
+    if (clip) clip.draw(genCtx, genCanvas.width, genCanvas.height, SIDE);
+  }
+  requestAnimationFrame(genLoop);
+})();
+
+function setLayer(layer, i){
+  if (layer.dataset.num === String(i) && layer.src){ return; } // 既に同じ動画なら読み直さない
+  layer.loop = true;   // 相方が間に合わないときのフォールバック
+  layer.muted = true;
+  layer.dataset.num = String(i);
+  layer.src = src(i);
+  layer.load();
+}
+
+/* ---- ギャップレスループ（常駐） ----
+   表示中の vA が終わる直前に vB を先行スタートし、動き出した瞬間に表示を入れ替える。
+   vB が未準備・再生失敗のときは何もしない＝ vA の標準 loop がつなぐ（従来動作）。 */
+(function loopTick(){
+  requestAnimationFrame(loopTick);
+  if (swapping || genClipId) return;
+  if (shownNum === -1 || isGen(shownNum)) return;
+  const a = layers[vA], b = layers[vB];
+  if (!a.duration || a.paused) return;
+  if (a.duration - a.currentTime > LOOP_LEAD) return;
+  if (b.dataset.num !== String(shownNum) || b.readyState < 2) return;
+
+  swapping = true;
+  const myGen = gen;
+  try{ b.currentTime = 0; }catch(e){}
+  b.play().catch(()=>{ swapping = false; });
+
+  const t0 = performance.now();
+  const flip = ()=>{
+    if (myGen !== gen) return;               // 項目が切り替わったら中止（後始末は render 側）
+    if (b.currentTime > 0){                  // 相方が動き出した＝この瞬間に入れ替え
+      b.classList.add('show');
+      a.classList.remove('show');
+      try{ a.pause(); a.currentTime = 0; }catch(e){}
+      const t = vA; vA = vB; vB = t;
+      swapping = false;
+    } else if (performance.now() - t0 > 1000){  // 動き出さない場合は諦めて標準 loop に任せる
+      try{ b.pause(); }catch(e){}
+      swapping = false;
+    } else {
+      requestAnimationFrame(flip);
+    }
+  };
+  requestAnimationFrame(flip);
+})();
+
+/* 次項目の先読み。vid のみ対象（gen は即出せるので不要） */
+function preload(next){
+  if (!isGen(next)) setLayer(layers[vP], next);
+}
+
+// 指定項目を表示。空いたリソースに next を先読み。
+function render(cur, next){
+  waitEl.style.display = 'none';
+
+  // 既に表示中、または今その項目へ切り替え中なら、先読みだけ更新して終わり
+  if (cur === shownNum || cur === targetNum){
+    preload(next);
+    return;
+  }
+
+  const myGen = ++gen;
+  targetNum = cur;
+
+  /* ---- gen を表示 ---- */
+  if (isGen(cur)){
+    const tryShow = ()=>{
+      if (myGen !== gen) return;                    // 古い指示は破棄
+      const clip = (window.GEN_CLIPS || {})[cur];
+      if (!clip){ setTimeout(tryShow, 100); return; } // スクリプト読込待ち
+      genClipId = cur;
+      clip.draw(genCtx, genCanvas.width, genCanvas.height, SIDE); // 1フレーム目を描いてから見せる
+      genCanvas.classList.add('show');
+      requestAnimationFrame(()=> requestAnimationFrame(()=>{
+        if (myGen !== gen) return;
+        layers.forEach((v)=>{ v.classList.remove('show'); try{ v.pause(); }catch(e){} });
+        swapping = false;
+        shownNum = cur;
+        preload(next);
+      }));
+    };
+    tryShow();
+    return;
+  }
+
+  /* ---- vid を表示 ---- */
+  const showV = layers[vP];   // 先読み枠に cur を用意して表示に回す
+  setLayer(showV, cur);
+
+  const reveal = ()=>{
+    if (myGen !== gen) return;             // 古い指示は破棄
+    playMuted(showV);
+    showV.classList.add('show');
+    requestAnimationFrame(()=> requestAnimationFrame(()=>{
+      if (myGen !== gen) return;
+      const oldA = vA, oldB = vB;
+      [oldA, oldB].forEach((i)=>{
+        layers[i].classList.remove('show');
+        try{ layers[i].pause(); layers[i].currentTime = 0; }catch(e){}
+      });
+      genCanvas.classList.remove('show');  // gen から戻る場合はキャンバスを消す
+      genClipId = null;
+      vA = vP; vB = vS; vP = oldA; vS = oldB;   // 役割を付け替え
+      swapping = false;
+      setLayer(layers[vB], cur);                // ループ相方に同じ動画を用意
+      shownNum = cur;
+      preload(next);                            // 空いた先読み枠へ次を
+    }));
+  };
+
+  if (showV.readyState >= 2){ reveal(); }
+  else {
+    let done = false;
+    const once = ()=>{ if(done) return; done = true; reveal(); };
+    showV.addEventListener('loadeddata', once, { once: true });
+    showV.addEventListener('error', once, { once: true });
+    setTimeout(once, 2000);                // 読み込みが詰まっても2秒で進める
+  }
+}
+
+const ch = new BroadcastChannel('same_difference');
+ch.onmessage = (e)=>{
+  const m = e.data;
+  if (m.genFiles) loadGenScripts(m.genFiles);
+  if (m.type === 'init' || m.type === 'advance'){
+    render(m[SIDE+'cur'], m[SIDE+'next']);
+  }
+  if (m.type === 'sync'){
+    // 表示中と項目が違うときだけ追従（取りこぼし復帰用）。同じなら何もしない。
+    if (m[SIDE+'cur'] !== shownNum){ render(m[SIDE+'cur'], m[SIDE+'next']); }
+  }
+};
+
+document.addEventListener('click', ()=>{
+  if(!document.fullscreenElement) document.documentElement.requestFullscreen();
+});
+document.addEventListener('keydown', (e)=>{
+  if(e.key.toLowerCase() === 'f'){
+    if(!document.fullscreenElement) document.documentElement.requestFullscreen();
+    else document.exitFullscreen();
+  }
+});
+</script>
+</body>
+</html>

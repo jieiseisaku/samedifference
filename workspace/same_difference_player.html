@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>same difference — player</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; background: #000; overflow: hidden; }
+  body { font-family: -apple-system, "Helvetica Neue", sans-serif; }
+
+  /* ---- 2画面表示 ---- */
+  #stage {
+    display: flex;
+    width: 100vw;
+    height: 100vh;
+  }
+  .panel {
+    flex: 1 1 50%;
+    height: 100%;
+    position: relative;
+    background: #000;
+    overflow: hidden;
+  }
+  .panel video {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+    opacity: 0;
+  }
+  .panel video.show { opacity: 1; }
+
+  /* ---- コントロール ---- */
+  #ctrl {
+    position: fixed;
+    left: 50%;
+    bottom: 20px;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    padding: 10px 14px;
+    background: rgba(20,20,20,0.85);
+    border-radius: 8px;
+    color: #eee;
+    font-size: 13px;
+    z-index: 10;
+    transition: opacity 0.4s;
+    user-select: none;
+  }
+  #ctrl.hidden { opacity: 0; pointer-events: none; }
+  #ctrl button {
+    background: #2a2a2a;
+    color: #eee;
+    border: 1px solid #444;
+    border-radius: 5px;
+    padding: 6px 12px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  #ctrl button:hover { background: #3a3a3a; }
+  #ctrl button.active { background: #4a7dff; border-color: #4a7dff; color: #fff; }
+  #ctrl label { display: flex; align-items: center; gap: 6px; }
+  #ctrl input[type=number] {
+    width: 52px;
+    background: #1a1a1a;
+    color: #eee;
+    border: 1px solid #444;
+    border-radius: 4px;
+    padding: 4px 6px;
+    font-size: 13px;
+  }
+  #ctrl .sep { width: 1px; height: 22px; background: #444; }
+  #ctrl .hint { color: #888; font-size: 11px; }
+
+  #status { color: #888; font-size: 11px; min-width: 84px; }
+</style>
+</head>
+<body>
+
+<div id="stage">
+  <div class="panel">
+    <video class="layerL" muted playsinline></video>
+    <video class="layerL" muted playsinline></video>
+  </div>
+  <div class="panel">
+    <video class="layerR" muted playsinline></video>
+    <video class="layerR" muted playsinline></video>
+  </div>
+</div>
+
+<div id="ctrl">
+  <button id="startBtn">開始</button>
+  <div class="sep"></div>
+  <button id="modeRandom" class="active">ランダム</button>
+  <button id="modePair">ペア</button>
+  <div class="sep"></div>
+  <label>間隔 <input type="number" id="interval" value="30" min="1" step="1"> 秒</label>
+  <div class="sep"></div>
+  <span id="status">停止中</span>
+  <span class="hint">H:UI / F:全画面</span>
+</div>
+
+<script>
+/* =========================================================
+   設定
+   - 動画は L_01.mp4 〜 L_NN.mp4 / R_01.mp4 〜 R_NN.mp4
+   - このHTMLと同じフォルダに置く
+   - PAIR_COUNT を実際のペア数に合わせる
+   ========================================================= */
+const PAIR_COUNT = 7;          // ペア数（動画が増えたらここを変更）
+const PAD = 2;                 // ファイル名の桁数（01 なら 2）
+
+const layersL = document.querySelectorAll('.layerL');
+const layersR = document.querySelectorAll('.layerR');
+const startBtn = document.getElementById('startBtn');
+const modeRandomBtn = document.getElementById('modeRandom');
+const modePairBtn = document.getElementById('modePair');
+const intervalInput = document.getElementById('interval');
+const statusEl = document.getElementById('status');
+const ctrl = document.getElementById('ctrl');
+
+let running = false;
+let mode = 'random';           // 'random' | 'pair'
+let timer = null;
+
+// 各パネルの現在表示中レイヤー（0 or 1）と直前の番号
+let activeL = 0, activeR = 0;
+let lastL = 0, lastR = 0;
+
+function num(n){ return String(n).padStart(PAD, '0'); }
+
+// 直前と同じ番号を避けて抽選（ペア数1のときはそのまま）
+function pick(prev){
+  if (PAIR_COUNT <= 1) return 1;
+  let n;
+  do { n = Math.floor(Math.random() * PAIR_COUNT) + 1; } while (n === prev);
+  return n;
+}
+
+function srcL(i){ return `L_${num(i)}.mp4`; }
+function srcR(i){ return `R_${num(i)}.mp4`; }
+
+function swap(){
+  let li, ri;
+  if (mode === 'pair'){
+    li = ri = pick(lastL);                   // L・R 同じ番号（直前と違う番号）
+  } else {
+    li = pick(lastL);
+    ri = pick(lastR);                        // L・R 独立してランダム（各々直前と違う）
+  }
+  lastL = li; lastR = ri;
+
+  // 裏レイヤーに読み込んでから表示を入れ替える（黒画面を挟まない）
+  crossfade(layersL, activeL, srcL(li), (next)=> activeL = next);
+  crossfade(layersR, activeR, srcR(ri), (next)=> activeR = next);
+
+  statusEl.textContent = `L_${num(li)} / R_${num(ri)}`;
+}
+
+// layers: 2枚のvideo, current: 現在表示中のindex, src: 次のソース
+function crossfade(layers, current, src, done){
+  const next = current === 0 ? 1 : 0;
+  const cur = layers[current];
+  const nxt = layers[next];
+
+  nxt.loop = true;
+  nxt.muted = true;
+  nxt.src = src;
+
+  const reveal = ()=>{
+    nxt.play().catch(()=>{});
+    nxt.classList.add('show');   // 即時表示
+    cur.classList.remove('show');// 即時非表示
+    done(next);
+    // 裏に回ったレイヤーを停止して負荷を抑える
+    try{ cur.pause(); }catch(e){}
+  };
+
+  // 最初のフレームが用意できてから切り替える → 点滅しない
+  if (nxt.readyState >= 2){ reveal(); }
+  else {
+    nxt.addEventListener('loadeddata', reveal, { once: true });
+    // 読み込み失敗（ファイル未配置など）でも一応切り替える
+    nxt.addEventListener('error', ()=>{ done(next); }, { once: true });
+  }
+}
+
+function start(){
+  running = true;
+  startBtn.textContent = '停止';
+  swap();
+  schedule();
+}
+function stop(){
+  running = false;
+  startBtn.textContent = '開始';
+  clearTimeout(timer);
+  statusEl.textContent = '停止中';
+}
+function schedule(){
+  clearTimeout(timer);
+  const sec = Math.max(1, parseFloat(intervalInput.value) || 30);
+  timer = setTimeout(()=>{
+    if(!running) return;
+    swap();
+    schedule();
+  }, sec * 1000);
+}
+
+/* ---- イベント ---- */
+startBtn.addEventListener('click', ()=> running ? stop() : start());
+
+modeRandomBtn.addEventListener('click', ()=>{
+  mode = 'random';
+  modeRandomBtn.classList.add('active');
+  modePairBtn.classList.remove('active');
+  if(running) swap();
+});
+modePairBtn.addEventListener('click', ()=>{
+  mode = 'pair';
+  modePairBtn.classList.add('active');
+  modeRandomBtn.classList.remove('active');
+  if(running) swap();
+});
+intervalInput.addEventListener('change', ()=>{ if(running) schedule(); });
+
+/* ---- キーボード ---- */
+document.addEventListener('keydown', (e)=>{
+  const k = e.key.toLowerCase();
+  if(k === 'h'){ ctrl.classList.toggle('hidden'); }
+  if(k === 'f'){
+    if(!document.fullscreenElement) document.documentElement.requestFullscreen();
+    else document.exitFullscreen();
+  }
+  if(k === ' '){ e.preventDefault(); running ? stop() : start(); }
+  if(k === 'n' && running){ swap(); schedule(); }   // 手動で次へ
+});
+
+/* 3秒操作がなければUIを自動で隠す（マウスで再表示） */
+let hideTimer;
+function resetHide(){
+  ctrl.classList.remove('hidden');
+  clearTimeout(hideTimer);
+  hideTimer = setTimeout(()=>{ if(running) ctrl.classList.add('hidden'); }, 3000);
+}
+document.addEventListener('mousemove', resetHide);
+resetHide();
+</script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080">
+<style>
+.blink { animation: blink 1s linear infinite; }
+@keyframes blink { 0%, 49.9% { opacity: 1; } 50%, 100% { opacity: 0; } }
+</style>
+<rect width="1920" height="1080" fill="#000"/>
+<g class="grp"><text x="350" y="540" text-anchor="middle" dominant-baseline="central" font-family="'Hiragino Kaku Gothic ProN', 'Hiragino Sans', 'Yu Gothic', sans-serif" font-weight="300" font-size="1150" fill="#fff" class="blink">(</text><text x="960" y="540" text-anchor="middle" dominant-baseline="central" font-family="'Hiragino Kaku Gothic ProN', 'Hiragino Sans', 'Yu Gothic', sans-serif" font-weight="300" font-size="700" fill="#fff" class="">月</text><text x="1570" y="540" text-anchor="middle" dominant-baseline="central" font-family="'Hiragino Kaku Gothic ProN', 'Hiragino Sans', 'Yu Gothic', sans-serif" font-weight="300" font-size="1150" fill="#fff" class="blink">)</text></g>
+</svg>

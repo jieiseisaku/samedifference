@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>weekday — motion sketches</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#111; color:#eee; font-family:-apple-system,"Helvetica Neue",sans-serif; padding:24px; }
+  h1 { font-size:15px; margin-bottom:4px; }
+  p.note { color:#888; font-size:12px; margin-bottom:20px; line-height:1.7; }
+  h2 { font-size:13px; color:#aaa; margin:18px 0 8px; font-weight:600; }
+  .pair { display:flex; gap:12px; }
+  .pair figure { flex:1; }
+  .pair img { width:100%; display:block; border:1px solid #333; border-radius:4px; background:#000; }
+  figcaption { color:#666; font-size:11px; margin-top:3px; }
+</style>
+</head>
+<body>
+<h1>weekday — モーション案（SVGアニメーション）</h1>
+<p class="note">フォントは仮。採用案が決まれば G_02_weekday.js に実装します。SVGファイルは motion/ フォルダ内（単体でブラウザ表示可）。</p>
+
+<h2>A 呼吸 — 全体が4秒周期でゆっくり拡縮（scale 1.00→1.03）</h2>
+<div class="pair">
+  <figure><img src="A_breath_L.svg" alt=""><figcaption>L</figcaption></figure>
+  <figure><img src="A_breath_R.svg" alt=""><figcaption>R</figcaption></figure>
+</div>
+
+<h2>B 明滅 — ピリオド／括弧が1秒周期で明滅（時計のコロンと同期する想定）</h2>
+<div class="pair">
+  <figure><img src="B_blink_L.svg" alt=""><figcaption>L</figcaption></figure>
+  <figure><img src="B_blink_R.svg" alt=""><figcaption>R</figcaption></figure>
+</div>
+
+<h2>C 間 — 字間／括弧が6秒周期でゆっくり開いて閉じる</h2>
+<div class="pair">
+  <figure><img src="C_ma_L.svg" alt=""><figcaption>L</figcaption></figure>
+  <figure><img src="C_ma_R.svg" alt=""><figcaption>R</figcaption></figure>
+</div>
+</body>
+</html>
