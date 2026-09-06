@@ -43,9 +43,12 @@
    gen クリップID（文字列 "G_01"）。
 
    設計の要点（安定性優先）:
-   - 表示中の動画は常に loop = true。何が起きても動画自身が回り続ける。
-     ギャップレス交代は「うまくいけば継ぎ目が消える」上乗せの仕組みで、
-     失敗しても標準ループに落ちるだけ。止まることはない。
+   - ループは動画自身の loop に任せる（control のプレビューと同じ最も単純な形）。
+     表示中の動画は常に loop = true なので、何が起きても回り続ける。
+   - GAPLESS_LOOP を true にすると、ループの継ぎ目を消すために相方の要素と
+     交代する仕組みが乗る。既定は false。安定性を最優先し、継ぎ目が気になる
+     場合だけ有効にする。交代は末尾 LOOP_LEAD 秒の窓の中でしか成立させず、
+     窓を過ぎた交代は必ず捨てる（遅れて出すと「再生直後にまた頭出し」になる）。
    - 交代は相方が実際に動き出したことを確認してから、前面に重ねて行う。
      重ねてから元を消すので、両方が消えた瞬間（黒）ができない。
    - 250ms ごとの見張り（heal）が「表示が1枚あって、それが再生中で、
@@ -60,9 +63,14 @@ const SIDE = 'L';
 const PAD = 2;
 const VIDEO_DIR = 'assets/video/';
 
-const LOOP_LEAD_MIN = 0.06;   // 相方を先行スタートする最短の余裕（秒）
-const LOOP_LEAD_MAX = 0.50;   // 同・最長。交代が遅い環境では自動で伸びる
-const SWAP_TIMEOUT  = 400;    // 交代をあきらめるまで（ms）
+const GAPLESS_LOOP = false;   // true: 相方と交代してループの継ぎ目を消す
+                              /* 既定は false（動画自身の loop だけで回す）。
+                                 プレビューと同じ最も単純な経路になり、
+                                 交代にまつわる不具合が起きようがない。 */
+const LOOP_LEAD   = 0.08;     // 相方を先行スタートする余裕（秒）。固定。
+                              /* ここを大きくすると、その秒数だけ末尾が切り捨てられて
+                                 「早く頭出しされた」ように見えるため、伸ばさない。 */
+const SWAP_TIMEOUT  = 150;    // 交代をあきらめるまで（ms）。遅れた交代は必ず捨てる。
 const HEAL_MS       = 250;    // 見張りの間隔（ms）
 const BUFFER_WAIT   = 30000;  // 読み込みを待つ上限（ms）
 
@@ -78,7 +86,6 @@ let gen = 0;            // 最新指示のみ有効にする世代番号
 let genClipId = null;   // canvas に描画中の gen クリップID
 let swapping = false;   // ループ交代の実行中
 let swapDeadline = 0;   // 交代の期限（これを過ぎたら失敗とみなす）
-let loopLead = LOOP_LEAD_MIN;
 
 function num(n){ return String(n).padStart(PAD, '0'); }
 function src(i){ return `${VIDEO_DIR}${SIDE}_${num(i)}.mp4`; }
@@ -95,6 +102,29 @@ function setLayer(layer, i){
   layer.load();
 }
 function playSafe(v){ v.muted = true; const p = v.play(); if (p && p.catch) p.catch(()=>{}); }
+/* 表に出ていないレイヤーだけ、止めて先頭に戻す。
+   表示中のレイヤーには絶対に触らない（触ると再生中に頭出しされてしまう）。 */
+function parkHidden(v){
+  if (v.classList.contains('show')) return false;
+  try{ v.pause(); v.currentTime = 0; }catch(e){}
+  return true;
+}
+/* 表に出さないまま一度だけ再生してデコーダを温め、0秒に戻して止めておく */
+function primeLayer(v){
+  const t0 = Date.now();
+  const wait = ()=>{
+    if (v.classList.contains('show')) return;     // 表に出たら温める必要はない
+    if (v.readyState >= 3){
+      const p = v.play();
+      const settle = ()=> parkHidden(v);
+      if (p && p.then) p.then(()=> setTimeout(settle, 60)).catch(()=>{});
+      else setTimeout(settle, 60);
+      return;
+    }
+    if (Date.now() - t0 < 10000) setTimeout(wait, 100);
+  };
+  wait();
+}
 function hideAllExcept(keep){
   layers.forEach((v)=>{ if (v !== keep){ v.classList.remove('show'); v.classList.remove('top'); } });
 }
@@ -145,20 +175,19 @@ let swapToken = 0;
 function tryLoopSwap(){
   const a = layers[vA], b = layers[vB];
   if (!a.duration || a.paused || a.ended) return;
-  if (a.duration - a.currentTime > loopLead) return;
+  if (a.duration - a.currentTime > LOOP_LEAD) return;
   if (b === a) return;
   if (b.dataset.num !== String(shownNum) || b.readyState < 3) return;  // 相方が未準備 → 標準ループに任せる
 
   swapping = true;
-  swapDeadline = performance.now() + SWAP_TIMEOUT + 200;
+  swapDeadline = performance.now() + SWAP_TIMEOUT + 100;
   const myGen = gen, myToken = ++swapToken;
-  const t0 = performance.now();
+  const aStart = a.currentTime;              // 交代を仕掛けた時点の再生位置
   let settled = false;
 
   const giveUp = ()=>{                       // 交代せず、元の動画をそのまま続ける
     if (settled) return; settled = true;
-    try{ b.pause(); b.currentTime = 0; }catch(e){}
-    loopLead = Math.min(LOOP_LEAD_MAX, loopLead * 2 + 0.05);
+    parkHidden(b);                           // 表に出ていなければ止めて戻す
     swapping = false;
   };
 
@@ -170,9 +199,12 @@ function tryLoopSwap(){
     if (settled) return;
     if (myToken !== swapToken || myGen !== gen){ giveUp(); return; }
     if (b.readyState < 2 || b.currentTime <= 0){ giveUp(); return; }   // 出せる状態でなければ交代しない
+    /* 遅れて届いた交代は必ず捨てる。
+       表示中の動画がすでに標準ループで先頭へ戻っていたら（現在位置が仕掛けた
+       時点より手前）、ここで相方を出すと「再生直後にまた頭出し」になる。
+       末尾に達していない場合も同様に捨てて、そのまま最後まで再生させる。 */
+    if (a.currentTime < aStart || a.duration - a.currentTime > LOOP_LEAD + 0.06){ giveUp(); return; }
     settled = true;
-    loopLead = Math.min(LOOP_LEAD_MAX,
-               Math.max(LOOP_LEAD_MIN, (performance.now() - t0) / 1000 * 1.5 + 0.02));
     b.classList.add('top');                  // 前面に重ねる（この時点で切れ目は無い）
     b.classList.add('show');
     requestAnimationFrame(()=>{
@@ -193,6 +225,7 @@ function tryLoopSwap(){
 
 (function loopTick(){
   requestAnimationFrame(loopTick);
+  if (!GAPLESS_LOOP) return;
   if (genClipId || shownNum === -1 || isGen(shownNum)) return;
   if (swapping){
     if (performance.now() > swapDeadline) swapping = false;   // 期限切れは失敗として解除
@@ -287,6 +320,7 @@ function prepare(item){
       let primed = false;
       const settle = ()=>{
         if (primed) return; primed = true;
+        if (v.classList.contains('show')){ finish(); return; }  // 既に表に出ていたら触らない
         try{ v.pause(); }catch(e){}
         if (v.currentTime !== 0){
           v.addEventListener('seeked', finish, { once: true });
@@ -358,7 +392,10 @@ function show(cur, next){
     const oldA = vA, oldB = vB;
     vA = vP; vB = vS; vP = oldA; vS = oldB;  // 役割はここで確定させる（後続の停止で崩れない）
     shownNum = cur;
-    setLayer(layers[vB], cur);               // ループ相方に同じ動画を用意
+    if (GAPLESS_LOOP){
+      setLayer(layers[vB], cur);             // ループ相方に同じ動画を用意
+      primeLayer(layers[vB]);                // 最初のループから交代できるよう温めておく
+    }
     genClipId = null;
     requestAnimationFrame(()=> requestAnimationFrame(()=>{
       if (myGen !== gen) return;
