@@ -34,7 +34,9 @@
   <span id="clips"></span>
   <span class="sep"></span>
   <span id="sides"></span>
-  <span id="hint">クリック / F: 全画面　　L・R・B: 面切替</span>
+  <span class="sep"></span>
+  <span id="days"></span>
+  <span id="hint">クリック / F: 全画面　　L・R・B: 面切替　　←→: 曜日送り</span>
 </div>
 
 <script src="gen_files.js"></script>
@@ -47,7 +49,8 @@
 <script>
 /* gen クリップ単体プレビュー
  * gen_files.js の一覧からクリップを選び、L / R / L+R で表示する。
- * URLパラメータ: ?clip=G_01&side=LR （side: L | R | LR）
+ * URLパラメータ: ?clip=G_01&side=LR&day=TUE （side: L | R | LR / day: SUN…SAT）
+ * 曜日を指定すると、その曜日の日付として描く（実時間は流れ続けるので点滅も動く）。
  * このファイルは gen/ フォルダ内から開くこと（file:// 可）。 */
 (function () {
   var q = new URLSearchParams(location.search);
@@ -57,9 +60,22 @@
   var side = (q.get('side') || 'LR').toUpperCase();
   if (['L', 'R', 'LR'].indexOf(side) < 0) side = 'LR';
 
+  /* 曜日の差し替え。null なら実時間のまま */
+  var DAYS = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
+  var dayOverride = DAYS.indexOf((q.get('day') || '').toUpperCase());
+  if (dayOverride < 0) dayOverride = null;
+
+  /* 描画に渡す時刻。曜日指定時は日数だけずらすので、時刻・点滅はそのまま動く */
+  function nowValue() {
+    var t = Date.now();
+    if (dayOverride === null) return t;
+    return t + (dayOverride - new Date(t).getDay()) * 86400000;
+  }
+
   var stage = document.getElementById('stage');
   var clipsEl = document.getElementById('clips');
   var sidesEl = document.getElementById('sides');
+  var daysEl = document.getElementById('days');
   var bar = document.getElementById('bar');
 
   var slots = [];   // [{cv, ctx, side}]
@@ -110,6 +126,27 @@
       b.onclick = function () { side = p[0]; rebuildStage(); rebuildBar(); };
       sidesEl.appendChild(b);
     });
+
+    daysEl.innerHTML = '';
+    var live = document.createElement('button');
+    live.textContent = '実時間';
+    live.classList.toggle('active', dayOverride === null);
+    live.onclick = function () { dayOverride = null; rebuildBar(); };
+    daysEl.appendChild(live);
+    DAYS.forEach(function (name, i) {
+      var b = document.createElement('button');
+      b.textContent = name;
+      b.classList.toggle('active', dayOverride === i);
+      b.onclick = function () { dayOverride = i; rebuildBar(); };
+      daysEl.appendChild(b);
+    });
+  }
+
+  /* 曜日を1つ送る（実時間のときは今日を起点にする） */
+  function stepDay(n) {
+    var base = dayOverride === null ? new Date().getDay() : dayOverride;
+    dayOverride = (base + n + 7) % 7;
+    rebuildBar();
   }
 
   function toggleFS() {
@@ -127,11 +164,14 @@
     if (k === 'l') { side = 'L'; rebuildStage(); rebuildBar(); }
     if (k === 'r') { side = 'R'; rebuildStage(); rebuildBar(); }
     if (k === 'b') { side = 'LR'; rebuildStage(); rebuildBar(); }
+    if (e.key === 'ArrowRight') stepDay(1);
+    if (e.key === 'ArrowLeft') stepDay(-1);
   });
 
   (function loop() {
     var clip = clipId && reg[clipId];
-    if (clip) slots.forEach(function (s) { clip.draw(s.ctx, s.cv.width, s.cv.height, s.side); });
+    var t = nowValue();
+    if (clip) slots.forEach(function (s) { clip.draw(s.ctx, s.cv.width, s.cv.height, s.side, t); });
     requestAnimationFrame(loop);
   })();
 

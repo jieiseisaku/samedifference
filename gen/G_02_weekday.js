@@ -63,6 +63,13 @@
     ".": {"bx":2227.74,"by":2112.5,"circles":[[2257.74,2720,30]]}
   };
 
+  /* グリフごとの縦の伸縮率（仮想ボディ上端を固定したまま縦だけ伸ばす）。
+   * U は下の丸みのオーバーシュートが 7.5u しかなく、同じ丸い字面の S・O（15u）より
+   * 上がって見えるため、下端を 7.5u ぶん伸ばして揃える（637.5u → 645u）。
+   * 上端は平らでキャップラインに乗っているので動かさない。
+   * SVG 側の U を描き直したら、この表から外すこと。 */
+  var Y_FIX = { "U": 645 / 637.5 };
+
   var pathCache = {};
   function getPath(ch) {
     if (!pathCache[ch]) pathCache[ch] = new Path2D(GLYPHS[ch].d);
@@ -73,9 +80,10 @@
   function drawGlyph(ctx, ch, x, y, s) {
     var g = GLYPHS[ch];
     if (!g) return;
+    var fy = Y_FIX[ch] || 1;
     ctx.save();
     ctx.translate(x, y);
-    ctx.scale(s, s);
+    ctx.scale(s, s * fy);             // 縦補正（仮想ボディ上端を固定）
     ctx.translate(-g.bx, -g.by);      // フォント座標 → 仮想ボディ原点
     if (g.d) ctx.fill(getPath(ch));
     if (g.circles) {
@@ -198,7 +206,7 @@
       R_BODY_RATIO: R_BODY_RATIO, R_FG: R_FG, R_BG: R_BG,
       C_COLS: C_COLS, C_ROWS: C_ROWS, C_UNIT_RATIO: C_UNIT_RATIO,
       C_DOT_RATIO: C_DOT_RATIO, C_FG: C_FG, C_BG: C_BG,
-      PINK: PINK, BLINK_MS: BLINK_MS
+      PINK: PINK, BLINK_MS: BLINK_MS, Y_FIX: Y_FIX
     }
   };
 
