@@ -72,8 +72,8 @@
   <div class="row">
     <button id="startBtn">開始</button>
     <div class="sep"></div>
-    <button id="modeRandom" class="active">ランダム</button>
-    <button id="modePair">ペア</button>
+    <button id="modeRandom">ランダム</button>
+    <button id="modePair" class="active">ペア</button>
     <div class="sep"></div>
     <button id="pvToggle" class="active">プレビューON</button>
   </div>
@@ -147,7 +147,7 @@ const redetectBtn = document.getElementById('redetect');
 const audioMsg = document.getElementById('audioMsg');
 
 let running = false;
-let mode = 'random';
+let mode = 'pair';
 let timer = null;
 let lastSwitch = 0;
 let previewOn = true;
@@ -379,13 +379,17 @@ function pickAudio(exclude){
   return f;
 }
 
-/* 壁時計（ms）→ AudioContext の時計（秒） */
-function ctxTime(atMs){ return actx.currentTime + (atMs - Date.now()) / 1000; }
+/* 壁時計（ms）→ AudioContext の時計（秒）
+   出力レイテンシぶん早めに予約し、実際に音が出る瞬間を映像に合わせる。 */
+function ctxTime(atMs){
+  const lat = actx.outputLatency || actx.baseLatency || 0;
+  return actx.currentTime + (atMs - Date.now()) / 1000 - lat;
+}
 
 function startSlot(file, when){
   const { buffer, offset, duration } = buffers.get(file);
   const g = actx.createGain();
-  g.gain.setValueAtTime(0, Math.max(0, when - XFADE));
+  g.gain.setValueAtTime(0, Math.max(0, when));
   g.gain.linearRampToValueAtTime(1, when + XFADE);
   g.connect(actx.destination);
   const s = actx.createBufferSource();
@@ -399,7 +403,7 @@ function startSlot(file, when){
 }
 function stopSlot(slot, when){
   try{
-    slot.gain.gain.setValueAtTime(slot.gain.gain.value, Math.max(actx.currentTime, when - XFADE));
+    slot.gain.gain.setValueAtTime(slot.gain.gain.value, Math.max(actx.currentTime, when));
     slot.gain.gain.linearRampToValueAtTime(0, when + XFADE);
     slot.source.stop(when + XFADE * 2);
   }catch(e){}
@@ -423,16 +427,20 @@ function audioAdvance(atMs){
   nowAudioLabel = audioNowLabel();
 }
 
-async function startAudio(atMs){
+/* デコードと AudioContext の再開まで済ませる。開始時刻を決める前に呼ぶ。 */
+async function prepareAudio(){
   if (!AUDIO_ALL.length) return;
   try { await loadAudio(); await actx.resume(); }
-  catch(e){ console.warn('audio 読み込み失敗', e); return; }
-  if (!running) return;                       // 読み込み中に停止された
+  catch(e){ console.warn('audio 準備失敗', e); }
+}
+/* 準備済みの前提で、指定時刻ちょうどに1本目（スロットA）を鳴らす */
+function startAudio(atMs){
+  if (!AUDIO_ALL.length || !actx) return;
   audioPlaying = true;
   slots = [null, null];
   slotTurn = 0;                               // 開始はスロットAから
   audioBag = [];
-  audioAdvance(Math.max(atMs, Date.now() + 60));
+  audioAdvance(atMs);
   preview();
 }
 function stopAudio(){
@@ -551,13 +559,13 @@ async function start(){
   const token = ++cueToken;                  // 改めて cue し、両画面の ready を取り直す
   sendCue(token, [curL, curR], [nextL, nextR]);
   statusEl.textContent = '左右の準備を待っています…';
-  await waitReady(token, READY_WAIT);
+  await Promise.all([ waitReady(token, READY_WAIT), prepareAudio() ]);
   if (!running) return;                    // 待っている間に停止された
-  const at = Date.now() + START_LEAD;
+  const at = Date.now() + START_LEAD;       // 映像・音声ともこの時刻ちょうどに始める
   ch.postMessage({ type:'go', token, at });
   lastSwitch = at;
   cuedFor = 0; pendingAfter = null;
-  startAudio(at);                            // 映像と同じ時刻に1本目（スロットA）を鳴らす
+  startAudio(at);
   setTimeout(()=>{ if (running) preview(); }, Math.max(0, at - Date.now()));
   schedule();
 }
@@ -602,7 +610,10 @@ function tick(){
   }
 }
 
-startBtn.addEventListener('click', ()=> running ? stop() : start());
+startBtn.addEventListener('click', ()=>{
+  if (actx) actx.resume().catch(()=>{});   // ユーザー操作の中で再開しておく
+  running ? stop() : start();
+});
 modeRandomBtn.addEventListener('click', ()=>{
   mode='random'; modeRandomBtn.classList.add('active'); modePairBtn.classList.remove('active');
   resetBags(); if (!running) arm();
@@ -658,7 +669,7 @@ document.getElementById('openR').addEventListener('click', ()=> window.open('dis
 
 document.addEventListener('keydown', (e)=>{
   if(e.target.tagName === 'INPUT') return;
-  if(e.key === ' '){ e.preventDefault(); running ? stop() : start(); }
+  if(e.key === ' '){ e.preventDefault(); if (actx) actx.resume().catch(()=>{}); running ? stop() : start(); }
   if(e.key.toLowerCase() === 'n' && running){ lastSwitch = Date.now(); advance(); }
 });
 </script>
