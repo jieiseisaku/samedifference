@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>same difference — control</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; min-height: 100%; background: #111; color: #eee;
+    font-family: -apple-system, "Helvetica Neue", sans-serif; }
+  #wrap { max-width: 720px; margin: 0 auto; padding: 24px 20px 60px; }
+  h1 { font-size: 16px; font-weight: 600; margin-bottom: 4px; }
+  .desc { color: #888; font-size: 12px; line-height: 1.7; margin-bottom: 20px; }
+  .desc code { background: #222; padding: 1px 5px; border-radius: 3px; }
+
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 16px; }
+  button {
+    background: #2a2a2a; color: #eee; border: 1px solid #444;
+    border-radius: 6px; padding: 9px 16px; font-size: 14px; cursor: pointer;
+  }
+  button:hover { background: #3a3a3a; }
+  button.active { background: #4a7dff; border-color: #4a7dff; color: #fff; }
+  button:disabled { opacity: 0.4; cursor: default; }
+  button.mini { padding: 5px 10px; font-size: 12px; }
+  label { display: flex; align-items: center; gap: 6px; font-size: 14px; }
+  .sep { width: 1px; height: 24px; background: #333; }
+  .tag { font-size: 12px; color: #888; min-width: 76px; }
+  .note { color: #888; font-size: 12px; }
+
+  /* ラジオ／チェックはピル型 */
+  .pill { display: flex; align-items: center; gap: 6px; padding: 6px 12px;
+    border: 1px solid #444; border-radius: 999px; font-size: 13px;
+    cursor: pointer; user-select: none; }
+  .pill:has(input:checked) { border-color: #4a7dff; background: #1b2740; color: #cfe0ff; }
+  .pill input { accent-color: #4a7dff; width: 14px; height: 14px; }
+
+  #openRow button { background: #1f3a1f; border-color: #2f5f2f; }
+  #openRow button:hover { background: #2a4a2a; }
+
+  #status { color: #9ab; font-size: 13px; margin: 8px 0 20px; }
+
+  /* モニタ間隔を実機に合わせる：横幅1に対して隙間0.88
+     幅w×2 + 隙間0.88w = 2.88w = 100% → w = 100/2.88% */
+  .previews { display: flex; justify-content: center; }
+  .pv { width: calc(100% / 2.88); flex: none; }
+  .previews .pv:first-child { margin-right: calc((100% / 2.88) * 0.88); }
+  .pv h2 { font-size: 11px; color: #888; margin-bottom: 4px; font-weight: 500; }
+  .pv .frame { position: relative; width: 100%; aspect-ratio: 16/9;
+    background: #000; border: 1px solid #333; border-radius: 4px; overflow: hidden; }
+  .pv video, .pv canvas { position:absolute; top:0; left:0; width:100%; height:100%; object-fit: contain; }
+  .pv canvas { display: none; }
+  .pv canvas.show { display: block; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <h1>same difference — control</h1>
+  <div class="desc">
+    このページで抽選と再生を操作します。<code>display_L.html</code> をモニター1、<code>display_R.html</code> をモニター2で開き、各画面をクリックすると全画面になります。<br>
+    動画 <code>L_01.mp4…</code> / <code>R_01.mp4…</code> は control と同じフォルダに置いてください。ペア数は起動時に自動で数えます（ファイルを増減したら「再検出」）。<br>
+    gen クリップ（リアルタイム描画）は <code>gen/</code> フォルダに置き、<code>gen/gen_files.js</code> に列挙すると抽選に混ざります。単体確認は <code>gen/gen_preview.html</code>。<br>
+    音声は映像とは完全に別系統です。<code>../assets/audio/</code> のサンプルを長さ別に <code>audio_files.js</code> へ列挙し、この画面が WebAudio で切替グリッドの境界ちょうどに次のサンプルを予約再生します（短いサンプルはループで埋め、長いサンプルは境界でカット）。映像側は常にミュートです。<br>
+    映像と音声の切替周期はそれぞれ独立に設定できます（映像30秒・音声15秒などの組み合わせが可能）。<br>
+    <b>fetch を使うため、file:// で直接開くと音声が読み込めません。</b>ローカル確認時はプロジェクト直下で <code>python3 -m http.server</code> を実行し <code>http://localhost:8000/workspace/control.html</code> を開いてください（公開時の https では不要）。
+  </div>
+
+  <div class="row" id="openRow">
+    <button id="openL">モニター1（L）を開く</button>
+    <button id="openR">モニター2（R）を開く</button>
+  </div>
+
+  <div class="row">
+    <button id="startBtn">開始</button>
+    <div class="sep"></div>
+    <button id="modeRandom" class="active">ランダム</button>
+    <button id="modePair">ペア</button>
+    <div class="sep"></div>
+    <button id="pvToggle" class="active">プレビューON</button>
+  </div>
+
+  <div class="row">
+    <span class="tag">映像の切替</span>
+    <label class="pill"><input type="radio" name="vgrid" value="15">15秒</label>
+    <label class="pill"><input type="radio" name="vgrid" value="30" checked>30秒</label>
+    <div class="sep"></div>
+    <span id="pairMsg" class="note">ペア数を確認中…</span>
+    <button id="redetect" class="mini">再検出</button>
+  </div>
+
+  <div class="row">
+    <span class="tag">音声の切替</span>
+    <label class="pill"><input type="radio" name="agrid" value="15">15秒</label>
+    <label class="pill"><input type="radio" name="agrid" value="30" checked>30秒</label>
+    <div class="sep"></div>
+    <span id="audioMsg" class="note"></span>
+  </div>
+
+  <div class="row">
+    <span class="tag">使うサンプル</span>
+    <span id="lenChecks" style="display:flex;gap:10px;flex-wrap:wrap;"></span>
+  </div>
+
+  <div class="row">
+    <button id="genToggle" class="active">gen込み</button>
+    <span id="genList" class="note"></span>
+  </div>
+
+  <div id="status">停止中</div>
+
+  <div class="previews">
+    <div class="pv"><h2>L プレビュー</h2><div class="frame"><video id="pvL" muted playsinline loop></video><canvas id="pvgL" width="480" height="270"></canvas></div></div>
+    <div class="pv"><h2>R プレビュー</h2><div class="frame"><video id="pvR" muted playsinline loop></video><canvas id="pvgR" width="480" height="270"></canvas></div></div>
+  </div>
+</div>
+
+<script src="gen/gen_files.js"></script>
+<script src="../assets/audio/audio_files.js"></script>
+<script>
+/* =========================================================
+   same difference — control
+
+   映像：BroadcastChannel で display_L / display_R に番号を送るだけ。
+         ペア数は起動時に L_xx.mp4 / R_xx.mp4 の存在を数えて自動取得。
+   音声：映像とは独立した系統。WebAudio で全サンプルを事前デコードし、
+         切替グリッド（15/30秒）の境界ちょうどに次を予約再生する。
+   ========================================================= */
+const PAD = 2;
+let PAIR_COUNT = 0;          // 起動時の自動検出で入る
+
+const GEN_FILES = window.GEN_FILES || [];   // gen/gen_files.js の一覧
+const GEN_IDS = GEN_FILES.map(f => f.match(/^(G_\d+)/)[1]);
+let genOn = true;            // gen を抽選に含めるか（UIのトグルで変更）
+
+function isGenItem(v){ return typeof v === 'string'; }
+function num(n){ return String(n).padStart(PAD, '0'); }
+
+const ch = new BroadcastChannel('same_difference');
+
+const startBtn = document.getElementById('startBtn');
+const modeRandomBtn = document.getElementById('modeRandom');
+const modePairBtn = document.getElementById('modePair');
+const statusEl = document.getElementById('status');
+const pvL = document.getElementById('pvL');
+const pvR = document.getElementById('pvR');
+const pvgL = document.getElementById('pvgL');
+const pvgR = document.getElementById('pvgR');
+const pairMsg = document.getElementById('pairMsg');
+const redetectBtn = document.getElementById('redetect');
+const audioMsg = document.getElementById('audioMsg');
+
+let running = false;
+let mode = 'random';
+let timer = null;
+let lastSwitch = 0;
+let previewOn = true;
+let curL = 0, curR = 0, nextL = 0, nextR = 0;
+
+const vGrids = [...document.querySelectorAll('input[name="vgrid"]')];
+const aGrids = [...document.querySelectorAll('input[name="agrid"]')];
+function videoGrid(){ return Number(vGrids.find(g => g.checked).value); }
+function audioGrid(){ return Number(aGrids.find(g => g.checked).value); }
+
+
+/* =========================================================
+   ペア数の自動取得
+   L_01.mp4 / R_01.mp4 から順に存在を調べ、途切れた手前までをペア数にする。
+   http(s) では HEAD リクエストで軽く確認し、file:// など fetch が使えない
+   環境では video 要素で読めるかどうかにフォールバックする。
+   ========================================================= */
+function videoProbe(url){
+  return new Promise((resolve)=>{
+    const v = document.createElement('video');
+    let settled = false;
+    const done = (ok)=>{ if(settled) return; settled = true; v.removeAttribute('src'); v.load(); resolve(ok); };
+    v.muted = true;
+    v.addEventListener('loadeddata', ()=> done(true),  { once: true });
+    v.addEventListener('error',      ()=> done(false), { once: true });
+    setTimeout(()=> done(false), 4000);   // 応答なしは無しとみなす
+    v.src = url;
+    v.load();
+  });
+}
+async function fileExists(url){
+  try {
+    const r = await fetch(url, { method: 'HEAD', cache: 'no-store' });
+    return r.ok;
+  } catch (e) {
+    return videoProbe(url);
+  }
+}
+let detecting = false;
+async function detectPairs(){
+  if (detecting) return;
+  detecting = true;
+  redetectBtn.disabled = true;
+  pairMsg.textContent = 'ペア数を確認中…';
+  let count = 0;
+  for (let i = 1; i <= 999; i++){
+    const [okL, okR] = await Promise.all([
+      fileExists(`L_${num(i)}.mp4`),
+      fileExists(`R_${num(i)}.mp4`),
+    ]);
+    if (okL && okR) count = i; else break;
+  }
+  PAIR_COUNT = count;
+  pairMsg.textContent = count > 0
+    ? `${count} ペアを検出（L_01…L_${num(count)} / R_01…R_${num(count)}）`
+    : 'L_01.mp4 / R_01.mp4 が見つかりません';
+  redetectBtn.disabled = false;
+  detecting = false;
+}
+redetectBtn.addEventListener('click', detectPairs);
+detectPairs();
+
+
+/* =========================================================
+   抽選
+   ========================================================= */
+function pool(){
+  const a = [];
+  for (let i = 1; i <= PAIR_COUNT; i++) a.push(i);
+  if (genOn) a.push(...GEN_IDS);
+  return a;
+}
+function pick(prev){
+  const p = pool();
+  if (!p.length) return 0;
+  if (p.length === 1) return p[0];
+  const c = p.filter(v => v !== prev);   // 直前と同じ項目は引かない
+  return c[Math.floor(Math.random()*c.length)];
+}
+function drawNext(prevL, prevR){
+  if (mode === 'pair'){ const v = pick(prevL); return [v, v]; }
+  return [pick(prevL), pick(prevR)];
+}
+function sideLabel(side, v){ return isGenItem(v) ? v : `${side}_${num(v)}`; }
+
+
+/* =========================================================
+   音声（映像とは独立）
+   添付サンプラーと同じ方式：
+   - ページ表示時に全ファイルのダウンロードだけ先行させる
+   - 開始時にまとめてデコードし、前後の無音をトリム
+   - 1枠＝1サンプル。グリッド長ぶんだけループ再生し、境界で次に切り替える
+   - 次のサンプルは「現在の終了時刻ちょうど」に予約するので継ぎ目が出ない
+   ========================================================= */
+const AUDIO_DIR = '../assets/audio/';
+const AUDIO_FILES = window.AUDIO_FILES || {};
+const AUDIO_LENGTHS = Object.keys(AUDIO_FILES).sort((a,b)=> Number(a)-Number(b));
+const AUDIO_ALL = AUDIO_LENGTHS.flatMap(k => AUDIO_FILES[k]);
+function audioURL(f){ return AUDIO_DIR + encodeURIComponent(f); }
+function audioLabel(f){ return f.replace(/\.[a-z0-9]+$/i, ''); }
+
+/* 「使うサンプル」チェックを長さキーから自動生成 */
+const lenChecksEl = document.getElementById('lenChecks');
+AUDIO_LENGTHS.forEach((k)=>{
+  const l = document.createElement('label');
+  l.className = 'pill';
+  l.innerHTML = `<input type="checkbox" value="${k}" checked>${k}sec（${AUDIO_FILES[k].length}）`;
+  lenChecksEl.appendChild(l);
+});
+const lenChecks = [...lenChecksEl.querySelectorAll('input')];
+audioMsg.textContent = AUDIO_ALL.length
+  ? `audio ${AUDIO_ALL.length}本（assets/audio/audio_files.js で編集）`
+  : 'audio なし（assets/audio/audio_files.js に追加）';
+
+// ダウンロードだけ先行（デコードは初回開始時）
+const fetched = new Map(AUDIO_ALL.map(f =>
+  [f, fetch(audioURL(f)).then(r => { if(!r.ok) throw new Error(r.status); return r.arrayBuffer(); })
+        .catch(e => { console.warn('audio fetch 失敗:', f, e); return null; })]
+));
+
+let actx = null;
+const buffers = new Map();   // file -> {buffer, offset, duration}（無音トリム済み）
+let audioPlaying = false;
+let lastAudio = null;
+let curAudio = null;         // {source, file, when, endTime}
+let pendAudio = null;        // 次に鳴らす予約済みソース
+let nowAudioLabel = '';
+
+/* エンコーダのパディング等による先頭／末尾の無音を除いた範囲を求める */
+function trimBuffer(buffer){
+  const TH = 0.0005;
+  let start = buffer.length, end = 0;
+  for (let c = 0; c < buffer.numberOfChannels; c++){
+    const d = buffer.getChannelData(c);
+    let i = 0;
+    while (i < start && Math.abs(d[i]) < TH) i++;
+    start = Math.min(start, i);
+    let j = buffer.length - 1;
+    while (j > end && Math.abs(d[j]) < TH) j--;
+    end = Math.max(end, j);
+  }
+  return {
+    buffer,
+    offset: start / buffer.sampleRate,
+    duration: Math.max(0, end + 1 - start) / buffer.sampleRate,
+  };
+}
+
+async function loadAudio(){
+  if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
+  await actx.resume();
+  await Promise.all(AUDIO_ALL.map(async (f)=>{
+    if (buffers.has(f)) return;
+    const raw = await fetched.get(f);
+    if (!raw) return;                                   // 取得できなかったものは飛ばす
+    try { buffers.set(f, trimBuffer(await actx.decodeAudioData(raw.slice(0)))); }
+    catch(e){ console.warn('audio デコード失敗:', f, e); }
+  }));
+}
+
+function audioPool(){
+  return lenChecks.filter(c => c.checked)
+    .flatMap(c => AUDIO_FILES[c.value] || [])
+    .filter(f => buffers.has(f));
+}
+function pickAudio(){
+  const p = audioPool();
+  if (!p.length) return null;
+  const c = p.length > 1 ? p.filter(f => f !== lastAudio) : p;
+  return c[Math.floor(Math.random()*c.length)];
+}
+function makeAudioSource(file, when){
+  const { buffer, offset, duration } = buffers.get(file);
+  const G = audioGrid();
+  const s = actx.createBufferSource();
+  s.buffer = buffer;
+  s.loop = true;
+  s.loopStart = offset;
+  s.loopEnd = offset + duration;
+  s.connect(actx.destination);
+  s.start(when, offset);
+  s.stop(when + G);
+  return { source: s, file, when, endTime: when + G };
+}
+/* 次のサンプルを現在の終了時刻ちょうどに予約する */
+function scheduleNextAudio(when){
+  const f = pickAudio();
+  if (!f){ pendAudio = null; return; }
+  lastAudio = f;
+  pendAudio = makeAudioSource(f, when);
+}
+/* 現在のサンプルが終わった瞬間、予約済みが再生中になる */
+function promoteAudio(){
+  if (!audioPlaying) return;
+  if (!pendAudio){ stopAudio(); return; }
+  curAudio = pendAudio;
+  pendAudio = null;
+  nowAudioLabel = audioLabel(curAudio.file);
+  preview();
+  curAudio.source.onended = promoteAudio;
+  scheduleNextAudio(curAudio.endTime);
+}
+
+async function startAudio(){
+  if (!AUDIO_ALL.length) return;
+  try { await loadAudio(); }
+  catch(e){ console.warn('audio 読み込み失敗', e); return; }
+  if (!running) return;                       // 読み込み中に停止された
+  const f = pickAudio();
+  if (!f){ nowAudioLabel = ''; preview(); return; }
+  audioPlaying = true;
+  lastAudio = f;
+  curAudio = makeAudioSource(f, actx.currentTime + 0.05);
+  nowAudioLabel = audioLabel(f);
+  curAudio.source.onended = promoteAudio;
+  scheduleNextAudio(curAudio.endTime);
+  preview();
+}
+function stopAudio(){
+  audioPlaying = false;
+  for (const x of [curAudio, pendAudio]){
+    if (!x) continue;
+    x.source.onended = null;
+    try { x.source.stop(); } catch(e){}
+  }
+  curAudio = pendAudio = null;
+  nowAudioLabel = '';
+  if (actx) actx.suspend();
+}
+/* チェック／グリッドの変更は、予約済みの次サンプルに即反映する */
+function repickAudio(){
+  if (!audioPlaying || !actx) return;
+  if (pendAudio && pendAudio.when > actx.currentTime + 0.05){
+    const when = pendAudio.when;
+    pendAudio.source.onended = null;
+    try { pendAudio.source.stop(); } catch(e){}
+    pendAudio = null;
+    lastAudio = curAudio ? curAudio.file : null;
+    scheduleNextAudio(when);
+  } else if (!pendAudio && curAudio && curAudio.endTime > actx.currentTime){
+    scheduleNextAudio(curAudio.endTime);     // 全チェックが外れた後に戻された場合
+  }
+}
+lenChecks.forEach(c => c.addEventListener('change', repickAudio));
+aGrids.forEach(g => g.addEventListener('change', repickAudio));
+
+
+/* =========================================================
+   プレビュー・表示
+   ========================================================= */
+function clearPreview(){
+  pvL.removeAttribute('src'); pvR.removeAttribute('src'); pvL.load(); pvR.load();
+  [pvgL, pvgR].forEach(cv => { cv.classList.remove('show'); cv.dataset.clip = ''; });
+}
+function previewSide(video, canvas, side, v){
+  if (isGenItem(v)){
+    video.removeAttribute('src'); video.load();
+    canvas.dataset.clip = v;
+    canvas.classList.add('show');
+  } else {
+    canvas.classList.remove('show');
+    canvas.dataset.clip = '';
+    video.src = `${side}_${num(v)}.mp4`; video.play().catch(()=>{});
+  }
+}
+function preview(){
+  if (running){
+    statusEl.textContent = `再生中　${sideLabel('L', curL)} / ${sideLabel('R', curR)}`
+      + `　映像${videoGrid()}秒 / 音声${audioGrid()}秒`
+      + (nowAudioLabel ? `　♪ ${nowAudioLabel}` : '');
+  }
+  if (!previewOn){ clearPreview(); return; }
+  previewSide(pvL, pvgL, 'L', curL);
+  previewSide(pvR, pvgR, 'R', curR);
+}
+
+
+/* =========================================================
+   再生制御
+   ========================================================= */
+function start(){
+  if (!pool().length){
+    statusEl.textContent = '再生できる項目がありません（動画も gen も見つかりません）';
+    return;
+  }
+  running = true; startBtn.textContent = '停止';
+  [curL, curR]   = drawNext(0, 0);
+  [nextL, nextR] = drawNext(curL, curR);
+  ch.postMessage({ type:'init', Lcur:curL, Rcur:curR, Lnext:nextL, Rnext:nextR, genFiles:GEN_FILES });
+  startAudio();
+  preview();
+  schedule();
+}
+function stop(){
+  running = false; startBtn.textContent = '開始';
+  clearInterval(timer);
+  ch.postMessage({ type:'stop' });
+  stopAudio();
+  statusEl.textContent = '停止中';
+}
+// 次サイクル：cur を次へ進め、新しい next を先読みさせる
+function advance(){
+  curL = nextL; curR = nextR;
+  [nextL, nextR] = drawNext(curL, curR);
+  ch.postMessage({ type:'advance', Lcur:curL, Rcur:curR, Lnext:nextL, Rnext:nextR, genFiles:GEN_FILES });
+  preview();
+}
+function schedule(){
+  clearInterval(timer);
+  lastSwitch = Date.now();
+  // 実時間で経過を判定。0.5秒ごとに現在状態を sync 送信し続けるので、
+  // 表示ページが一度指示を取りこぼしても次の sync で必ず追従する。
+  timer = setInterval(()=>{
+    if(!running) return;
+    if (Date.now() - lastSwitch >= videoGrid()*1000){
+      lastSwitch = Date.now();
+      advance();
+    } else {
+      ch.postMessage({ type:'sync', Lcur:curL, Rcur:curR, Lnext:nextL, Rnext:nextR, genFiles:GEN_FILES });
+    }
+  }, 500);
+}
+
+startBtn.addEventListener('click', ()=> running ? stop() : start());
+modeRandomBtn.addEventListener('click', ()=>{
+  mode='random'; modeRandomBtn.classList.add('active'); modePairBtn.classList.remove('active');
+});
+modePairBtn.addEventListener('click', ()=>{
+  mode='pair'; modePairBtn.classList.add('active'); modeRandomBtn.classList.remove('active');
+});
+vGrids.forEach(g => g.addEventListener('change', ()=>{ if(running){ lastSwitch = Date.now(); preview(); } }));
+
+document.getElementById('pvToggle').addEventListener('click', (e)=>{
+  previewOn = !previewOn;
+  e.target.classList.toggle('active', previewOn);
+  e.target.textContent = previewOn ? 'プレビューON' : 'プレビューOFF';
+  if (running) preview();
+  else if (!previewOn){ clearPreview(); }
+});
+
+/* ---- gen: 抽選トグルと一覧表示 ---- */
+const genToggleBtn = document.getElementById('genToggle');
+const genListEl = document.getElementById('genList');
+genListEl.textContent = GEN_FILES.length
+  ? `gen ${GEN_FILES.length}本: ${GEN_IDS.join(', ')}（gen/gen_files.js で編集）`
+  : 'gen なし（gen/gen_files.js に追加）';
+genToggleBtn.addEventListener('click', ()=>{
+  genOn = !genOn;
+  genToggleBtn.classList.toggle('active', genOn);
+  genToggleBtn.textContent = genOn ? 'gen込み' : 'genなし';
+});
+
+/* ---- gen: プレビュー用にスクリプトを読み込み、canvas に描画 ---- */
+(function loadGenScripts(){
+  GEN_FILES.forEach((f)=>{
+    const s = document.createElement('script');
+    s.src = 'gen/' + f;
+    document.head.appendChild(s);
+  });
+})();
+(function pvGenLoop(){
+  [[pvgL, 'L'], [pvgR, 'R']].forEach(([cv, side])=>{
+    const id = cv.dataset.clip;
+    if (id){
+      const clip = (window.GEN_CLIPS || {})[id];
+      if (clip) clip.draw(cv.getContext('2d'), cv.width, cv.height, side);
+    }
+  });
+  requestAnimationFrame(pvGenLoop);
+})();
+
+document.getElementById('openL').addEventListener('click', ()=> window.open('display_L.html','sd_L'));
+document.getElementById('openR').addEventListener('click', ()=> window.open('display_R.html','sd_R'));
+
+document.addEventListener('keydown', (e)=>{
+  if(e.target.tagName === 'INPUT') return;
+  if(e.key === ' '){ e.preventDefault(); running ? stop() : start(); }
+  if(e.key.toLowerCase() === 'n' && running){ lastSwitch = Date.now(); advance(); }
+});
+</script>
+</body>
+</html>
