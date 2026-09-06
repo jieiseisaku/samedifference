@@ -124,7 +124,7 @@
    ========================================================= */
 const PAD = 2;
 const VIDEO_DIR = 'assets/video/';   // 動画の置き場所
-let PAIR_COUNT = 0;          // 起動時の自動検出で入る
+let PAIRS = [];              // 起動時の自動検出で入る（存在するペア番号の一覧）
 
 const GEN_FILES = window.GEN_FILES || [];   // gen/gen_files.js の一覧
 const GEN_IDS = GEN_FILES.map(f => f.match(/^(G_\d+)/)[1]);
@@ -199,20 +199,26 @@ async function detectPairs(){
   detecting = true;
   redetectBtn.disabled = true;
   pairMsg.textContent = 'ペア数を確認中…';
-  let count = 0;
-  scan:
+  // 欠番があっても止まらない。1バッチまるごと見つからなかった時点で打ち切る。
+  const found = [];
   for (let base = 1; base <= 999; base += PROBE_BATCH){
     const idx = [];
     for (let i = base; i < base + PROBE_BATCH; i++) idx.push(i);
     const hit = await Promise.all(idx.map(pairExists));   // まとめて並列に問い合わせる
+    let any = false;
     for (let k = 0; k < hit.length; k++){
-      if (hit[k]) count = idx[k]; else break scan;
+      if (hit[k]){ found.push(idx[k]); any = true; }
     }
-    pairMsg.textContent = `ペア数を確認中… ${count}`;
+    if (!any) break;
+    pairMsg.textContent = `ペア数を確認中… ${found.length}`;
   }
-  PAIR_COUNT = count;
-  pairMsg.textContent = count > 0
-    ? `${count} ペアを検出（L_01…L_${num(count)} / R_01…R_${num(count)}）`
+  PAIRS = found;
+  const last = found.length ? found[found.length - 1] : 0;
+  const missing = [];
+  for (let i = 1; i <= last; i++) if (found.indexOf(i) < 0) missing.push(num(i));
+  pairMsg.textContent = found.length
+    ? `${found.length} ペアを検出（L_01…L_${num(last)}）`
+      + (missing.length ? `　欠番: ${missing.join(', ')}` : '')
     : 'assets/video/L_01.mp4 / R_01.mp4 が見つかりません';
   redetectBtn.disabled = false;
   detecting = false;
@@ -227,7 +233,7 @@ detectPairs();               // ページを開いた時点で開始
    ========================================================= */
 function pool(){
   const a = [];
-  if (genMode !== 'only'){ for (let i = 1; i <= PAIR_COUNT; i++) a.push(i); }
+  if (genMode !== 'only') a.push(...PAIRS);
   if (genMode !== 'off') a.push(...GEN_IDS);
   return a;
 }
