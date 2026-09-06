@@ -57,11 +57,11 @@
   <h1>same difference — control</h1>
   <div class="desc">
     このページで抽選と再生を操作します。<code>display_L.html</code> をモニター1、<code>display_R.html</code> をモニター2で開き、各画面をクリックすると全画面になります。<br>
-    動画 <code>L_01.mp4…</code> / <code>R_01.mp4…</code> は control と同じフォルダに置いてください。ペア数は起動時に自動で数えます（ファイルを増減したら「再検出」）。<br>
+    動画 <code>L_01.mp4…</code> / <code>R_01.mp4…</code> は <code>assets/video/</code> に置いてください。ペア数は起動時に自動で数えます（ファイルを増減したら「再検出」）。<br>
     gen クリップ（リアルタイム描画）は <code>gen/</code> フォルダに置き、<code>gen/gen_files.js</code> に列挙すると抽選に混ざります。単体確認は <code>gen/gen_preview.html</code>。<br>
-    音声は映像とは完全に別系統です。<code>../assets/audio/</code> のサンプルを長さ別に <code>audio_files.js</code> へ列挙し、この画面が WebAudio で切替グリッドの境界ちょうどに次のサンプルを予約再生します（短いサンプルはループで埋め、長いサンプルは境界でカット）。映像側は常にミュートです。<br>
+    音声は映像とは完全に別系統です。<code>assets/audio/</code> のサンプルを長さ別に <code>audio_files.js</code> へ列挙し、この画面が WebAudio で切替グリッドの境界ちょうどに次のサンプルを予約再生します（短いサンプルはループで埋め、長いサンプルは境界でカット）。映像側は常にミュートです。<br>
     映像と音声の切替周期はそれぞれ独立に設定できます（映像30秒・音声15秒などの組み合わせが可能）。<br>
-    <b>fetch を使うため、file:// で直接開くと音声が読み込めません。</b>ローカル確認時はプロジェクト直下で <code>python3 -m http.server</code> を実行し <code>http://localhost:8000/workspace/control.html</code> を開いてください（公開時の https では不要）。
+    <b>fetch を使うため、file:// で直接開くと音声が読み込めません。</b>ローカル確認時はプロジェクト直下で <code>python3 -m http.server</code> を実行し <code>http://localhost:8000/index.html</code> を開いてください（公開時の https では不要）。
   </div>
 
   <div class="row" id="openRow">
@@ -114,17 +114,18 @@
 </div>
 
 <script src="gen/gen_files.js"></script>
-<script src="../assets/audio/audio_files.js"></script>
+<script src="assets/audio/audio_files.js"></script>
 <script>
 /* =========================================================
    same difference — control
 
    映像：BroadcastChannel で display_L / display_R に番号を送るだけ。
-         ペア数は起動時に L_xx.mp4 / R_xx.mp4 の存在を数えて自動取得。
+         ペア数は起動時に assets/video/L_xx.mp4 / R_xx.mp4 の存在を数えて自動取得。
    音声：映像とは独立した系統。WebAudio で全サンプルを事前デコードし、
          切替グリッド（15/30秒）の境界ちょうどに次を予約再生する。
    ========================================================= */
 const PAD = 2;
+const VIDEO_DIR = 'assets/video/';   // 動画の置き場所
 let PAIR_COUNT = 0;          // 起動時の自動検出で入る
 
 const GEN_FILES = window.GEN_FILES || [];   // gen/gen_files.js の一覧
@@ -197,15 +198,15 @@ async function detectPairs(){
   let count = 0;
   for (let i = 1; i <= 999; i++){
     const [okL, okR] = await Promise.all([
-      fileExists(`L_${num(i)}.mp4`),
-      fileExists(`R_${num(i)}.mp4`),
+      fileExists(`${VIDEO_DIR}L_${num(i)}.mp4`),
+      fileExists(`${VIDEO_DIR}R_${num(i)}.mp4`),
     ]);
     if (okL && okR) count = i; else break;
   }
   PAIR_COUNT = count;
   pairMsg.textContent = count > 0
     ? `${count} ペアを検出（L_01…L_${num(count)} / R_01…R_${num(count)}）`
-    : 'L_01.mp4 / R_01.mp4 が見つかりません';
+    : 'assets/video/L_01.mp4 / R_01.mp4 が見つかりません';
   redetectBtn.disabled = false;
   detecting = false;
 }
@@ -244,7 +245,7 @@ function sideLabel(side, v){ return isGenItem(v) ? v : `${side}_${num(v)}`; }
    - 1枠＝1サンプル。グリッド長ぶんだけループ再生し、境界で次に切り替える
    - 次のサンプルは「現在の終了時刻ちょうど」に予約するので継ぎ目が出ない
    ========================================================= */
-const AUDIO_DIR = '../assets/audio/';
+const AUDIO_DIR = 'assets/audio/';
 const AUDIO_FILES = window.AUDIO_FILES || {};
 const AUDIO_LENGTHS = Object.keys(AUDIO_FILES).sort((a,b)=> Number(a)-Number(b));
 const AUDIO_ALL = AUDIO_LENGTHS.flatMap(k => AUDIO_FILES[k]);
@@ -412,7 +413,7 @@ function previewSide(video, canvas, side, v){
   } else {
     canvas.classList.remove('show');
     canvas.dataset.clip = '';
-    video.src = `${side}_${num(v)}.mp4`; video.play().catch(()=>{});
+    video.src = `${VIDEO_DIR}${side}_${num(v)}.mp4`; video.play().catch(()=>{});
   }
 }
 function preview(){

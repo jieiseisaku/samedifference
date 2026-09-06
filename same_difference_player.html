@@ -108,7 +108,7 @@
 /* =========================================================
    設定
    - 動画は L_01.mp4 〜 L_NN.mp4 / R_01.mp4 〜 R_NN.mp4
-   - このHTMLと同じフォルダに置く
+   - 動画は assets/video/ に置く
    - PAIR_COUNT を実際のペア数に合わせる
    ========================================================= */
 const PAIR_COUNT = 7;          // ペア数（動画が増えたらここを変更）
@@ -141,8 +141,9 @@ function pick(prev){
   return n;
 }
 
-function srcL(i){ return `L_${num(i)}.mp4`; }
-function srcR(i){ return `R_${num(i)}.mp4`; }
+const VIDEO_DIR = 'assets/video/';   // 動画の置き場所
+function srcL(i){ return `${VIDEO_DIR}L_${num(i)}.mp4`; }
+function srcR(i){ return `${VIDEO_DIR}R_${num(i)}.mp4`; }
 
 function swap(){
   let li, ri;

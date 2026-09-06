@@ -2,7 +2,7 @@
  * same difference — gen clip
  * G_01 clock : 実時間の時計ペア
  *   L面 = デジタル（HH:MM、コロンが毎秒点滅。
- *          グリフは assets/SD_font_numbers_v1.svg 由来。
+ *          グリフは assets/fonts/SD_font_numbers_v1.svg 由来。
  *          コロンは中央ドット＋ベースラインドットの設計で、
  *          フォント設計通りベースライン基準で配置する）
  *   R面 = アナログ（針幅60px・セーフエリア60px[1920x1080基準]。

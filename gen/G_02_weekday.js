@@ -2,10 +2,10 @@
  * same difference — gen clip
  * G_02 weekday : 曜日カレンダーペア（実時間）
  *   L面 = 英語（全大文字3文字略語+ピリオド e.g. MON.）黒字・白地
- *          グリフは assets/SD_font_EN_v1.svg + ピリオドは numbers 由来。
+ *          グリフは assets/fonts/SD_font_EN_v1.svg + ピリオドは numbers 由来。
  *          ベースライン揃え（ピリオドはベースライン上のドット）。
  *   R面 = 日本語（括弧囲み e.g. (月)）白字・黒地
- *          漢字は assets/SD_font_JP_v1.svg、括弧は numbers 由来。
+ *          漢字は assets/fonts/SD_font_JP_v1.svg、括弧は numbers 由来。
  *          括弧は漢字より大きくスケールし、bbox中央で垂直揃え。
  *
  * Canvas に毎フレーム描画するライブクリップ（プリレンダなし）。

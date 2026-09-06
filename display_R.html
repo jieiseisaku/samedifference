@@ -65,8 +65,9 @@ let gen = 0;           // 最新指示のみ有効にする世代番号
 let genClipId = null;  // canvas に描画中の gen クリップID（null なら描かない）
 let swapping = false;  // ループ切替の実行中フラグ
 
+const VIDEO_DIR = 'assets/video/';   // 動画の置き場所
 function num(n){ return String(n).padStart(PAD, '0'); }
-function src(i){ return `${SIDE}_${num(i)}.mp4`; }
+function src(i){ return `${VIDEO_DIR}${SIDE}_${num(i)}.mp4`; }
 function isGen(v){ return typeof v === 'string'; }
 function playMuted(v){ v.muted = true; v.play().catch(()=>{}); }
 
