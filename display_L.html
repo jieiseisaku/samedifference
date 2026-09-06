@@ -12,9 +12,12 @@
     position: absolute; top: 0; left: 0;
     width: 100%; height: 100%;
     object-fit: contain; display: block;
-    opacity: 0;
+    opacity: 0; z-index: 1;
   }
   .panel video.show, .panel canvas.show { opacity: 1; }
+  /* 交代先を先に前面へ重ね、1フレーム後に元を消す。両方が消えた瞬間を作らない */
+  .panel video.top { z-index: 2; }
+  #genLayer { z-index: 3; }
   #wait {
     position: fixed; left: 50%; top: 50%; transform: translate(-50%,-50%);
     color: #444; font-family: sans-serif; font-size: 14px;
@@ -45,13 +48,15 @@
 
    ループについて:
    ブラウザ標準の loop はループ点で一瞬止まるため、同じ動画を2要素に持たせて
-   交互再生する。終わる直前（LOOP_LEAD 秒前）に相方を先行スタートし、再生が
-   始まった瞬間に表示を切り替えることで、絶え間なくループする。
-   video 要素は4本: vA=表示中 / vB=ループ相方 / vP=次項目の先読み / vS=予備。
-   相方が間に合わない場合は標準 loop がフォールバックとして働く。 */
+   交互再生する。終わる直前（LOOP_LEAD 秒前）に相方を先行スタートし、相方の
+   最初のフレームが実際に描かれた瞬間（requestVideoFrameCallback）に前面へ重ね、
+   その次のフレームで元を消す。重ねてから消すので、両方が消えた瞬間ができない。
+   交代中は表示中の標準 loop を切り、間に合わなければ最終フレームで保持させる
+   （巻き戻して点滅させない）。
+   video 要素は4本: vA=表示中 / vB=ループ相方 / vP=次項目の先読み / vS=予備。 */
 const SIDE = 'L';
 const PAD = 2;
-const LOOP_LEAD = 0.15;   // 残りこの秒数になったら相方を先行スタート
+const LOOP_LEAD = 0.06;   // 残りこの秒数になったら相方を先行スタート
 
 const layers = document.querySelectorAll('.layer');
 const genCanvas = document.getElementById('genLayer');
@@ -105,6 +110,14 @@ function setLayer(layer, i){
 /* ---- ギャップレスループ（常駐） ----
    表示中の vA が終わる直前に vB を先行スタートし、動き出した瞬間に表示を入れ替える。
    vB が未準備・再生失敗のときは何もしない＝ vA の標準 loop がつなぐ（従来動作）。 */
+/* 実際に1フレーム描かれた瞬間を拾う。非対応環境は currentTime で代用する。 */
+function onFirstFrame(v, cb){
+  if (v.requestVideoFrameCallback){ v.requestVideoFrameCallback(()=> cb()); return; }
+  const t0 = performance.now();
+  const w = ()=>{ if (v.currentTime > 0 || performance.now() - t0 > 400) cb(); else requestAnimationFrame(w); };
+  requestAnimationFrame(w);
+}
+
 (function loopTick(){
   requestAnimationFrame(loopTick);
   if (swapping || genClipId) return;
@@ -116,26 +129,35 @@ function setLayer(layer, i){
 
   swapping = true;
   const myGen = gen;
-  try{ b.currentTime = 0; }catch(e){}
-  b.play().catch(()=>{ swapping = false; });
+  a.loop = false;                          // 交代中は巻き戻させない（最終フレームで保持）
+  try{ if (b.currentTime !== 0) b.currentTime = 0; }catch(e){}
+  b.play().catch(()=>{ a.loop = true; swapping = false; });
 
-  const t0 = performance.now();
+  let flipped = false;
   const flip = ()=>{
-    if (myGen !== gen) return;               // 項目が切り替わったら中止（後始末は render 側）
-    if (b.currentTime > 0){                  // 相方が動き出した＝この瞬間に入れ替え
-      b.classList.add('show');
-      a.classList.remove('show');
-      try{ a.pause(); a.currentTime = 0; }catch(e){}
+    if (flipped) return;
+    flipped = true;
+    if (myGen !== gen){ swapping = false; return; }   // 項目が切り替わった（後始末は show 側）
+    b.classList.add('top');                 // 相方を前面へ重ねる（この時点で切れ目は無い）
+    b.classList.add('show');
+    requestAnimationFrame(()=>{
+      if (myGen !== gen){ swapping = false; return; }
+      a.classList.remove('show');           // 1フレーム重ねたので、ここで元を消す
+      a.classList.remove('top');
+      try{ a.pause(); }catch(e){}
+      requestAnimationFrame(()=>{ try{ a.currentTime = 0; a.loop = true; }catch(e){} });  // 見えなくなってから巻き戻す
       const t = vA; vA = vB; vB = t;
       swapping = false;
-    } else if (performance.now() - t0 > 1000){  // 動き出さない場合は諦めて標準 loop に任せる
-      try{ b.pause(); }catch(e){}
-      swapping = false;
-    } else {
-      requestAnimationFrame(flip);
-    }
+    });
   };
-  requestAnimationFrame(flip);
+  onFirstFrame(b, flip);
+  setTimeout(()=>{                          // 描画通知が来ない場合の保険
+    if (flipped) return;
+    flipped = true;
+    try{ b.pause(); }catch(e){}
+    a.loop = true;
+    swapping = false;
+  }, 600);
 })();
 
 /* 次項目の先読み。vid のみ対象（gen は即出せるので不要） */
@@ -204,7 +226,7 @@ function show(cur, next){
       genCanvas.classList.add('show');
       requestAnimationFrame(()=> requestAnimationFrame(()=>{
         if (myGen !== gen) return;
-        layers.forEach((v)=>{ v.classList.remove('show'); try{ v.pause(); }catch(e){} });
+        layers.forEach((v)=>{ v.classList.remove('show'); v.classList.remove('top'); try{ v.pause(); }catch(e){} });
         swapping = false;
         shownNum = cur;
         preload(next);
@@ -221,13 +243,18 @@ function show(cur, next){
   const reveal = ()=>{
     if (myGen !== gen) return;             // 古い指示は破棄
     playMuted(showV);
+    showV.classList.add('top');            // 前面へ重ねてから表示する
     showV.classList.add('show');
     requestAnimationFrame(()=> requestAnimationFrame(()=>{
       if (myGen !== gen) return;
       const oldA = vA, oldB = vB;
       [oldA, oldB].forEach((i)=>{
         layers[i].classList.remove('show');
-        try{ layers[i].pause(); layers[i].currentTime = 0; }catch(e){}
+        layers[i].classList.remove('top');
+        try{ layers[i].pause(); }catch(e){}
+      });
+      requestAnimationFrame(()=>{               // 見えなくなってから巻き戻す
+        [oldA, oldB].forEach((i)=>{ try{ layers[i].currentTime = 0; layers[i].loop = true; }catch(e){} });
       });
       genCanvas.classList.remove('show');  // gen から戻る場合はキャンバスを消す
       genClipId = null;
