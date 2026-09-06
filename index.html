@@ -99,6 +99,7 @@
 
   <div class="row">
     <button id="genToggle" class="active">gen込み</button>
+    <span class="note">クリックで gen込み → genのみ → genなし</span>
     <span id="genList" class="note"></span>
   </div>
 
@@ -127,7 +128,7 @@ let PAIR_COUNT = 0;          // 起動時の自動検出で入る
 
 const GEN_FILES = window.GEN_FILES || [];   // gen/gen_files.js の一覧
 const GEN_IDS = GEN_FILES.map(f => f.match(/^(G_\d+)/)[1]);
-let genOn = true;            // gen を抽選に含めるか（UIのトグルで変更）
+let genMode = 'mix';         // 'mix'=動画+gen / 'only'=genのみ / 'off'=動画のみ
 
 function isGenItem(v){ return typeof v === 'string'; }
 function num(n){ return String(n).padStart(PAD, '0'); }
@@ -226,8 +227,8 @@ detectPairs();               // ページを開いた時点で開始
    ========================================================= */
 function pool(){
   const a = [];
-  for (let i = 1; i <= PAIR_COUNT; i++) a.push(i);
-  if (genOn) a.push(...GEN_IDS);
+  if (genMode !== 'only'){ for (let i = 1; i <= PAIR_COUNT; i++) a.push(i); }
+  if (genMode !== 'off') a.push(...GEN_IDS);
   return a;
 }
 function shuffle(a){
@@ -494,7 +495,7 @@ function preview(){
    時刻は同一マシン上の Date.now() を共有するため、左右のズレが出ない。 */
 const START_LEAD = 300;    // 準備完了から再生開始までの余裕（ms）
 const PREP_LEAD  = 1200;   // 切替の何ms前に cue を送るか
-const READY_WAIT = 8000;   // 準備完了を待つ上限（ms）
+const READY_WAIT = 40000;  // 準備完了を待つ上限（ms）実尺の動画を読み切るまで待つ
 
 let cueToken = 0;
 let cueWait  = null;       // 準備完了待ちの状態
@@ -516,6 +517,8 @@ function noteReady(side, token){
   const w = cueWait;
   if (!w || w.token !== token) return;
   w.got.add(side);
+  if (!running || w.got.size >= w.need.size) { /* 表示は下で更新 */ }
+  else statusEl.textContent = `読み込み中…（完了 ${[...w.got].sort().join(' / ')}）`;
   if ([...w.need].every(s => w.got.has(s))){
     clearTimeout(w.timer); cueWait = null; w.resolve();
   }
@@ -523,6 +526,7 @@ function noteReady(side, token){
 function sendCue(token, cur, next){
   ch.postMessage({ type:'cue', token, Lcur:cur[0], Rcur:cur[1], Lnext:next[0], Rnext:next[1], genFiles:GEN_FILES });
 }
+ch.postMessage({ type:'ping' });     // すでに開いている表示ページを数える
 ch.onmessage = (e)=>{
   const m = e.data || {};
   if (m.type === 'hello'){
@@ -556,9 +560,15 @@ async function start(){
     [nextL, nextR] = drawNext();
   }
   armed = null;
+  ch.postMessage({ type:'ping' });            // 開いている表示ページを数え直す
+  statusEl.textContent = '表示ページを確認中…';
+  await new Promise(r => setTimeout(r, 250)); // hello が返るのを待つ
+  if (!running) return;
   const token = ++cueToken;                  // 改めて cue し、両画面の ready を取り直す
   sendCue(token, [curL, curR], [nextL, nextR]);
-  statusEl.textContent = '左右の準備を待っています…';
+  statusEl.textContent = liveSides.size
+    ? `読み込み中…（${[...liveSides].sort().join(' / ')}）`
+    : '表示ページが見つかりません（先に L / R を開いてください）';
   await Promise.all([ waitReady(token, READY_WAIT), prepareAudio() ]);
   if (!running) return;                    // 待っている間に停止された
   const at = Date.now() + START_LEAD;       // 映像・音声ともこの時刻ちょうどに始める
@@ -638,10 +648,12 @@ const genListEl = document.getElementById('genList');
 genListEl.textContent = GEN_FILES.length
   ? `gen ${GEN_FILES.length}本: ${GEN_IDS.join(', ')}（gen/gen_files.js で編集）`
   : 'gen なし（gen/gen_files.js に追加）';
+const GEN_MODES = ['mix', 'only', 'off'];
+const GEN_LABELS = { mix:'gen込み', only:'genのみ', off:'genなし' };
 genToggleBtn.addEventListener('click', ()=>{
-  genOn = !genOn;
-  genToggleBtn.classList.toggle('active', genOn);
-  genToggleBtn.textContent = genOn ? 'gen込み' : 'genなし';
+  genMode = GEN_MODES[(GEN_MODES.indexOf(genMode) + 1) % GEN_MODES.length];
+  genToggleBtn.classList.toggle('active', genMode !== 'off');
+  genToggleBtn.textContent = GEN_LABELS[genMode];
   resetBags(); if (!running) arm();
 });
 

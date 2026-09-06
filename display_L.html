@@ -169,7 +169,10 @@ function preload(next){
 let cued = null;        // {token, cur, next}
 let lastCueAt = 0;
 
-/* cue された項目を再生できる状態まで読み込む */
+/* cue された項目を「すぐ出せる」状態まで用意する。
+   ここで最後まで読み込み、1フレーム目を実際に描かせてから止めておく。
+   go の瞬間の play() が即座に始まるので、左右で再生開始がずれない。 */
+const BUFFER_WAIT = 30000;   // 読み込みを待つ上限(ms)
 function prepare(item){
   return new Promise((resolve)=>{
     if (isGen(item)){
@@ -181,23 +184,44 @@ function prepare(item){
     setLayer(v, item);
     const t0 = Date.now();
     let done = false;
-    /* 出す直前の play() を軽くするため、一度だけ再生して即止めておく（不透明度0なので見えない） */
-    const warm = ()=>{
+    const finish = ()=>{ if (done) return; done = true; resolve(); };
+
+    /* 3) 先頭フレームを実際に描かせてから一時停止する（デコーダを温めて 0 秒に置く） */
+    function primeFirstFrame(){
+      let primed = false;
+      const settle = ()=>{
+        if (primed) return; primed = true;
+        try{ v.pause(); }catch(e){}
+        if (v.currentTime !== 0){
+          v.addEventListener('seeked', finish, { once: true });
+          try{ v.currentTime = 0; }catch(e){ finish(); }
+          setTimeout(finish, 500);
+        } else finish();
+      };
       try{
         const p = v.play();
-        if (p && p.then) p.then(()=>{ try{ v.pause(); v.currentTime = 0; }catch(e){} }).catch(()=>{});
-      }catch(e){}
-    };
-    const ok = ()=>{ if (done) return; done = true; warm(); resolve(); };
+        if (p && p.then) p.catch(()=> settle());
+      }catch(e){ settle(); return; }
+      if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(()=> settle());
+      setTimeout(settle, 1500);
+    }
+
+    /* 2) 末尾まで読み込めたか（buffered が duration を覆ったか） */
+    function fullyBuffered(){
+      if (!v.duration || !isFinite(v.duration) || !v.buffered.length) return false;
+      return v.buffered.end(v.buffered.length - 1) >= v.duration - 0.15;
+    }
+
+    /* 1) 読み込みの進行を待つ。全体を読み終えるのが理想、無理なら readyState で妥協する */
     const poll = ()=>{
       if (done) return;
       const el = Date.now() - t0;
-      if (v.readyState >= 3) ok();                 // 先まで再生できる状態
-      else if (el > 1500 && v.readyState >= 2) ok(); // 1フレーム出せれば妥協する
-      else setTimeout(poll, 50);
+      if (fullyBuffered() && v.readyState >= 4){ primeFirstFrame(); return; }
+      if (el > BUFFER_WAIT && v.readyState >= 2){ primeFirstFrame(); return; }
+      setTimeout(poll, 50);
     };
-    v.addEventListener('error', ok, { once: true });
-    setTimeout(ok, 8000);            // 読み込みが詰まっても待ち続けない
+    v.addEventListener('error', finish, { once: true });
+    setTimeout(finish, BUFFER_WAIT + 4000);   // 完全に詰まった場合の最後の逃げ道
     poll();
   });
 }
@@ -299,6 +323,10 @@ ch.onmessage = (e)=>{
   const m = e.data || {};
   if (m.genFiles) loadGenScripts(m.genFiles);
 
+  if (m.type === 'ping'){                        // control からの点呼
+    ch.postMessage({ type:'hello', side: SIDE });
+  }
+
   if (m.type === 'cue'){
     const c = { token:m.token, cur:m[SIDE+'cur'], next:m[SIDE+'next'] };
     cued = c; lastCueAt = Date.now();
@@ -326,6 +354,8 @@ ch.onmessage = (e)=>{
 };
 
 ch.postMessage({ type:'hello', side: SIDE });   // 開いたことを control に知らせ、先読みを受け取る
+/* control が後から開かれた／再読み込みされた場合に備え、待機中は名乗り続ける */
+setInterval(()=>{ if (shownNum === -1) ch.postMessage({ type:'hello', side: SIDE }); }, 2000);
 
 document.addEventListener('click', ()=>{
   if(!document.fullscreenElement) document.documentElement.requestFullscreen();
