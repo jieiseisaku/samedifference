@@ -40,7 +40,7 @@
   var A_SAFE = 60;        // セーフエリア幅（画面縁から）
   var A_HOUR_RATIO = 0.5; // 時針の長さ = 基本長 × この値
   var A_SWEEP = true;     // 秒針を連続移動（false で1秒ステップ）
-  var A_FG = "#ffffff";
+  var A_FG = "#c8c8c8";
   var A_BG = "#000000";
 
   /* ==== グリフデータ（bbox 左上原点に正規化済み） ====
