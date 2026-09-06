@@ -2,9 +2,8 @@
  * same difference — gen clip
  * G_01 clock : 実時間の時計ペア
  *   L面 = デジタル（HH:MM、コロンが毎秒点滅。
- *          グリフは assets/fonts/SD_font_numbers_v1.svg 由来。
- *          コロンは中央ドット＋ベースラインドットの設計で、
- *          フォント設計通りベースライン基準で配置する）
+ *          グリフは assets/fonts/SD_font_numbers.svg 由来。
+ *          コロンは2点の中心が数字の中心と揃うように配置する）
  *   R面 = アナログ（針幅60px・セーフエリア60px[1920x1080基準]。
  *          秒針・分針の基本長は左右方向に伸びたときの長さ（中心→左右の
  *          セーフエリアまで）。セーフエリアを越えそうな角度のみ、
@@ -29,11 +28,11 @@
   var DIGIT_HEIGHT_RATIO = 0.63;  // 数字(フラット字高630u)の高さ / 画面高
   var PITCH_DIGIT = 360;          // 数字1桁の送り幅（フォント単位・固定ピッチ）
   var PITCH_COLON = 140;          // コロンの送り幅
-  var FRAME_RATIO = 0.0104;       // 外枠の太さ / 画面高（0 で枠なし）
+  var FRAME_RATIO = 0;            // 外枠の太さ / 画面高（0 で枠なし）
   var LEADING_ZERO = true;        // true: 09:45 / false: 9:45
   var HOUR12 = false;             // true: 12時間制
   var BLINK_ON_MS = 500;          // 各秒の先頭でコロンを表示する時間(ms)
-  var FG = "#000000";
+  var FG = "#c8c8c8";             // 数字・コロンの色
   var BG = "#ffffff";
 
   /* ==== アナログ（R面）調整パラメータ（1920x1080基準px、他解像度は比例） ==== */
@@ -75,18 +74,14 @@
     }
     var x = (w - totalU * scale) / 2;
     var midY = h / 2;
-    var baselineY = midY + (FLAT_H / 2) * scale;  // 数字の字面下端
     var items = [];
     for (var j = 0; j < chars.length; j++) {
       var g = GLYPHS[chars[j]];
       if (g) {
-        var gy = chars[j] === ":"
-          ? baselineY + g.yOff * scale        // コロンはベースライン基準（フォント設計通り）
-          : midY - (g.h / 2) * scale;         // 数字は bbox 中央揃え
         items.push({
           ch: chars[j],
           x: x + ((pitches[j] - g.w) / 2) * scale,
-          y: gy
+          y: midY - (g.h / 2) * scale       // 数字もコロンも bbox 中央揃え
         });
       }
       x += pitches[j] * scale;
