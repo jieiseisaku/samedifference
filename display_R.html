@@ -23,10 +23,10 @@
 </head>
 <body>
 <div class="panel">
-  <video class="layer" playsinline muted></video>
-  <video class="layer" playsinline muted></video>
-  <video class="layer" playsinline muted></video>
-  <video class="layer" playsinline muted></video>
+  <video class="layer" playsinline muted preload="auto"></video>
+  <video class="layer" playsinline muted preload="auto"></video>
+  <video class="layer" playsinline muted preload="auto"></video>
+  <video class="layer" playsinline muted preload="auto"></video>
   <canvas id="genLayer" width="1920" height="1080"></canvas>
 </div>
 <div id="wait">コントロール画面の待機中…</div>
@@ -96,6 +96,7 @@ function setLayer(layer, i){
   if (layer.dataset.num === String(i) && layer.src){ return; } // 既に同じ動画なら読み直さない
   layer.loop = true;   // 相方が間に合わないときのフォールバック
   layer.muted = true;
+  layer.preload = 'auto';   // 表示前にバッファまで読ませる
   layer.dataset.num = String(i);
   layer.src = src(i);
   layer.load();
@@ -142,8 +143,45 @@ function preload(next){
   if (!isGen(next)) setLayer(layers[vP], next);
 }
 
+/* 表示待ちの項目。control から cue で受け取り、go の時刻ちょうどに出す。 */
+let cued = null;        // {token, cur, next}
+let lastCueAt = 0;
+
+/* cue された項目を再生できる状態まで読み込む */
+function prepare(item){
+  return new Promise((resolve)=>{
+    if (isGen(item)){
+      const wait = ()=> ((window.GEN_CLIPS || {})[item] ? resolve() : setTimeout(wait, 100));
+      wait();
+      return;
+    }
+    const v = layers[vP];
+    setLayer(v, item);
+    const t0 = Date.now();
+    let done = false;
+    /* 出す直前の play() を軽くするため、一度だけ再生して即止めておく（不透明度0なので見えない） */
+    const warm = ()=>{
+      try{
+        const p = v.play();
+        if (p && p.then) p.then(()=>{ try{ v.pause(); v.currentTime = 0; }catch(e){} }).catch(()=>{});
+      }catch(e){}
+    };
+    const ok = ()=>{ if (done) return; done = true; warm(); resolve(); };
+    const poll = ()=>{
+      if (done) return;
+      const el = Date.now() - t0;
+      if (v.readyState >= 3) ok();                 // 先まで再生できる状態
+      else if (el > 1500 && v.readyState >= 2) ok(); // 1フレーム出せれば妥協する
+      else setTimeout(poll, 50);
+    };
+    v.addEventListener('error', ok, { once: true });
+    setTimeout(ok, 8000);            // 読み込みが詰まっても待ち続けない
+    poll();
+  });
+}
+
 // 指定項目を表示。空いたリソースに next を先読み。
-function render(cur, next){
+function show(cur, next){
   waitEl.style.display = 'none';
 
   // 既に表示中、または今その項目へ切り替え中なら、先読みだけ更新して終わり
@@ -212,17 +250,55 @@ function render(cur, next){
 }
 
 const ch = new BroadcastChannel('same_difference');
+
+/* go で指定された壁時計の時刻ちょうどに出す。
+   L / R は同じマシンの Date.now() を見るので、左右のズレが出ない。 */
+const _mc = new MessageChannel();
+let _spinQ = [];
+_mc.port1.onmessage = ()=>{ const q = _spinQ; _spinQ = []; q.forEach(f => f()); };
+function tickSoon(fn){ _spinQ.push(fn); _mc.port2.postMessage(0); }   // setTimeout より細かい刻み
+
+function fireAt(at, run){
+  const step = ()=>{
+    const d = at - Date.now();
+    if (d <= 0){ run(); return; }
+    if (d > 40) setTimeout(step, d - 30);   // 直前まではタイマーで待つ
+    else tickSoon(step);                    // 残り40msは密に回して時刻ちょうどに出す
+  };
+  step();
+}
+
 ch.onmessage = (e)=>{
-  const m = e.data;
+  const m = e.data || {};
   if (m.genFiles) loadGenScripts(m.genFiles);
-  if (m.type === 'init' || m.type === 'advance'){
-    render(m[SIDE+'cur'], m[SIDE+'next']);
+
+  if (m.type === 'cue'){
+    const c = { token:m.token, cur:m[SIDE+'cur'], next:m[SIDE+'next'] };
+    cued = c; lastCueAt = Date.now();
+    if (shownNum === -1) waitEl.textContent = '読み込み中…';
+    prepare(c.cur).then(()=>{
+      if (cued !== c) return;
+      if (shownNum === -1) waitEl.textContent = '準備完了　コントロール画面で開始してください';
+      ch.postMessage({ type:'ready', side:SIDE, token:c.token });
+    });
   }
+
+  if (m.type === 'go'){
+    const c = cued;
+    if (!c || c.token !== m.token) return;
+    fireAt(m.at, ()=>{ if (cued === c) show(c.cur, c.next); });
+  }
+
   if (m.type === 'sync'){
-    // 表示中と項目が違うときだけ追従（取りこぼし復帰用）。同じなら何もしない。
-    if (m[SIDE+'cur'] !== shownNum){ render(m[SIDE+'cur'], m[SIDE+'next']); }
+    // 取りこぼし復帰用。cue の直後は go を待っている最中なので触らない。
+    if (m[SIDE+'cur'] !== shownNum && Date.now() - lastCueAt > 3000){
+      cued = null;
+      show(m[SIDE+'cur'], m[SIDE+'next']);
+    }
   }
 };
+
+ch.postMessage({ type:'hello', side: SIDE });   // 開いたことを control に知らせ、先読みを受け取る
 
 document.addEventListener('click', ()=>{
   if(!document.fullscreenElement) document.documentElement.requestFullscreen();

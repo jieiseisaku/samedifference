@@ -59,8 +59,8 @@
     このページで抽選と再生を操作します。<code>display_L.html</code> をモニター1、<code>display_R.html</code> をモニター2で開き、各画面をクリックすると全画面になります。<br>
     動画 <code>L_01.mp4…</code> / <code>R_01.mp4…</code> は <code>assets/video/</code> に置いてください。ペア数は起動時に自動で数えます（ファイルを増減したら「再検出」）。<br>
     gen クリップ（リアルタイム描画）は <code>gen/</code> フォルダに置き、<code>gen/gen_files.js</code> に列挙すると抽選に混ざります。単体確認は <code>gen/gen_preview.html</code>。<br>
-    音声は映像とは完全に別系統です。<code>assets/audio/</code> のサンプルを長さ別に <code>audio_files.js</code> へ列挙し、この画面が WebAudio で切替グリッドの境界ちょうどに次のサンプルを予約再生します（短いサンプルはループで埋め、長いサンプルは境界でカット）。映像側は常にミュートです。<br>
-    映像と音声の切替周期はそれぞれ独立に設定できます（映像30秒・音声15秒などの組み合わせが可能）。<br>
+    映像は消費型の抽選です。全ペアを1周するまで同じペアは出ず、1周し終えると新しいサイクルを引き直します（サイクルの継ぎ目でも同じペアは続きません）。<br>
+    音声はスロットA・Bの2本を同時に鳴らします。組が変わるたびに片方だけが入れ替わり、更新されるスロットは組ごとに交互です（A→B→A→B）。開始時はスロットAの1本のみで、2組目からBが入ります。曲も消費型の抽選で、全曲を鳴らし切るまで同じ曲は出ません。<code>assets/audio/</code> のサンプルを長さ別に <code>audio_files.js</code> へ列挙してください。映像側は常にミュートです。<br>
     <b>fetch を使うため、file:// で直接開くと音声が読み込めません。</b>ローカル確認時はプロジェクト直下で <code>python3 -m http.server</code> を実行し <code>http://localhost:8000/index.html</code> を開いてください（公開時の https では不要）。
   </div>
 
@@ -88,10 +88,7 @@
   </div>
 
   <div class="row">
-    <span class="tag">音声の切替</span>
-    <label class="pill"><input type="radio" name="agrid" value="15">15秒</label>
-    <label class="pill"><input type="radio" name="agrid" value="30" checked>30秒</label>
-    <div class="sep"></div>
+    <span class="tag">音声</span>
     <span id="audioMsg" class="note"></span>
   </div>
 
@@ -157,9 +154,7 @@ let previewOn = true;
 let curL = 0, curR = 0, nextL = 0, nextR = 0;
 
 const vGrids = [...document.querySelectorAll('input[name="vgrid"]')];
-const aGrids = [...document.querySelectorAll('input[name="agrid"]')];
 function videoGrid(){ return Number(vGrids.find(g => g.checked).value); }
-function audioGrid(){ return Number(aGrids.find(g => g.checked).value); }
 
 
 /* =========================================================
@@ -189,19 +184,30 @@ async function fileExists(url){
     return videoProbe(url);
   }
 }
+const PROBE_BATCH = 24;      // 1回にまとめて確認するペア数
 let detecting = false;
+async function pairExists(i){
+  const [okL, okR] = await Promise.all([
+    fileExists(`${VIDEO_DIR}L_${num(i)}.mp4`),
+    fileExists(`${VIDEO_DIR}R_${num(i)}.mp4`),
+  ]);
+  return okL && okR;
+}
 async function detectPairs(){
   if (detecting) return;
   detecting = true;
   redetectBtn.disabled = true;
   pairMsg.textContent = 'ペア数を確認中…';
   let count = 0;
-  for (let i = 1; i <= 999; i++){
-    const [okL, okR] = await Promise.all([
-      fileExists(`${VIDEO_DIR}L_${num(i)}.mp4`),
-      fileExists(`${VIDEO_DIR}R_${num(i)}.mp4`),
-    ]);
-    if (okL && okR) count = i; else break;
+  scan:
+  for (let base = 1; base <= 999; base += PROBE_BATCH){
+    const idx = [];
+    for (let i = base; i < base + PROBE_BATCH; i++) idx.push(i);
+    const hit = await Promise.all(idx.map(pairExists));   // まとめて並列に問い合わせる
+    for (let k = 0; k < hit.length; k++){
+      if (hit[k]) count = idx[k]; else break scan;
+    }
+    pairMsg.textContent = `ペア数を確認中… ${count}`;
   }
   PAIR_COUNT = count;
   pairMsg.textContent = count > 0
@@ -209,9 +215,10 @@ async function detectPairs(){
     : 'assets/video/L_01.mp4 / R_01.mp4 が見つかりません';
   redetectBtn.disabled = false;
   detecting = false;
+  arm();                     // 検出できた時点で1組引いて表示ページに先読みさせる
 }
 redetectBtn.addEventListener('click', detectPairs);
-detectPairs();
+detectPairs();               // ページを開いた時点で開始
 
 
 /* =========================================================
@@ -223,32 +230,66 @@ function pool(){
   if (genOn) a.push(...GEN_IDS);
   return a;
 }
-function pick(prev){
-  const p = pool();
-  if (!p.length) return 0;
-  if (p.length === 1) return p[0];
-  const c = p.filter(v => v !== prev);   // 直前と同じ項目は引かない
-  return c[Math.floor(Math.random()*c.length)];
+function shuffle(a){
+  for (let i = a.length - 1; i > 0; i--){
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
 }
-function drawNext(prevL, prevR){
-  if (mode === 'pair'){ const v = pick(prevL); return [v, v]; }
-  return [pick(prevL), pick(prevR)];
+/* 消費型の袋。引いた項目は袋から消え、袋が空になったら全項目で作り直す（＝1サイクル）。
+   サイクルの継ぎ目でも、直前に出た項目が続けて出ないようにする。 */
+function makeBag(){
+  let rest = [], last = null, sig = '';
+  return {
+    next(items){
+      const s = items.join('|');
+      if (s !== sig){ sig = s; rest = []; }        // 対象が変わったら袋を作り直す
+      if (!items.length) return 0;
+      if (!rest.length){
+        rest = shuffle(items.slice());
+        if (rest.length > 1 && rest[0] === last){  // 新サイクルの1つ目が直前と同じなら入れ替える
+          const j = 1 + Math.floor(Math.random() * (rest.length - 1));
+          [rest[0], rest[j]] = [rest[j], rest[0]];
+        }
+      }
+      last = rest.shift();
+      return last;
+    },
+    reset(){ rest = []; last = null; },
+    left(){ return rest.length; }
+  };
+}
+const bagPair = makeBag();                    // ペアモード用
+const bagL = makeBag(), bagR = makeBag();     // ランダムモード用（左右それぞれ）
+function resetBags(){ bagPair.reset(); bagL.reset(); bagR.reset(); }
+function bagLeft(){
+  const n = pool().length;
+  return mode === 'pair' ? `残り${bagPair.left()}/${n}` : `残り${bagL.left()}・${bagR.left()}/${n}`;
+}
+function drawNext(){
+  const p = pool();
+  if (!p.length) return [0, 0];
+  if (mode === 'pair'){ const v = bagPair.next(p); return [v, v]; }
+  return [bagL.next(p), bagR.next(p)];
 }
 function sideLabel(side, v){ return isGenItem(v) ? v : `${side}_${num(v)}`; }
 
 
 /* =========================================================
-   音声（映像とは独立）
-   添付サンプラーと同じ方式：
-   - ページ表示時に全ファイルのダウンロードだけ先行させる
-   - 開始時にまとめてデコードし、前後の無音をトリム
-   - 1枠＝1サンプル。グリッド長ぶんだけループ再生し、境界で次に切り替える
-   - 次のサンプルは「現在の終了時刻ちょうど」に予約するので継ぎ目が出ない
+   音声（スロットA・Bの2本を同時に鳴らす）
+   - 組が変わるたびに片方のスロットだけを入れ替える。更新するスロットは組ごとに交互
+   - 開始時はスロットAの1本のみ。2組目からスロットBに入る
+   - A→B→A→B と半分ずつ更新されるので、BGMは常に半分が持続する
+   - 曲は消費型の抽選。全曲を鳴らし切るまで同じ曲は出ない
+   - 引ける曲が無くなったら、そのとき鳴っている曲を除いた全曲で袋を作り直す
+   - 切替は映像の切替時刻ちょうど。壁時計を AudioContext の時計に変換して予約する
    ========================================================= */
 const AUDIO_DIR = 'assets/audio/';
 const AUDIO_FILES = window.AUDIO_FILES || {};
 const AUDIO_LENGTHS = Object.keys(AUDIO_FILES).sort((a,b)=> Number(a)-Number(b));
 const AUDIO_ALL = AUDIO_LENGTHS.flatMap(k => AUDIO_FILES[k]);
+const XFADE = 0.03;          // 切替のプチノイズ除け（秒）
 function audioURL(f){ return AUDIO_DIR + encodeURIComponent(f); }
 function audioLabel(f){ return f.replace(/\.[a-z0-9]+$/i, ''); }
 
@@ -265,18 +306,20 @@ audioMsg.textContent = AUDIO_ALL.length
   ? `audio ${AUDIO_ALL.length}本（assets/audio/audio_files.js で編集）`
   : 'audio なし（assets/audio/audio_files.js に追加）';
 
-// ダウンロードだけ先行（デコードは初回開始時）
+// 取得はページを開いた時点で先行させる
 const fetched = new Map(AUDIO_ALL.map(f =>
   [f, fetch(audioURL(f)).then(r => { if(!r.ok) throw new Error(r.status); return r.arrayBuffer(); })
         .catch(e => { console.warn('audio fetch 失敗:', f, e); return null; })]
 ));
 
 let actx = null;
+let decoding = null;
 const buffers = new Map();   // file -> {buffer, offset, duration}（無音トリム済み）
 let audioPlaying = false;
-let lastAudio = null;
-let curAudio = null;         // {source, file, when, endTime}
-let pendAudio = null;        // 次に鳴らす予約済みソース
+let slots = [null, null];    // [A, B] … {file, source, gain}
+let slotTurn = 0;            // 次に入れ替えるスロット（0=A, 1=B）
+let audioBag = [];           // まだ引かれていない曲
+let audioBagSig = '';
 let nowAudioLabel = '';
 
 /* エンコーダのパディング等による先頭／末尾の無音を除いた範囲を求める */
@@ -299,103 +342,109 @@ function trimBuffer(buffer){
   };
 }
 
-async function loadAudio(){
+/* ページを開いた時点でデコードまで済ませる（開始を待たせない） */
+function loadAudio(){
+  if (decoding) return decoding;
   if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
-  await actx.resume();
-  await Promise.all(AUDIO_ALL.map(async (f)=>{
+  decoding = Promise.all(AUDIO_ALL.map(async (f)=>{
     if (buffers.has(f)) return;
     const raw = await fetched.get(f);
     if (!raw) return;                                   // 取得できなかったものは飛ばす
     try { buffers.set(f, trimBuffer(await actx.decodeAudioData(raw.slice(0)))); }
     catch(e){ console.warn('audio デコード失敗:', f, e); }
   }));
+  return decoding;
 }
+if (AUDIO_ALL.length) loadAudio();
 
 function audioPool(){
   return lenChecks.filter(c => c.checked)
     .flatMap(c => AUDIO_FILES[c.value] || [])
     .filter(f => buffers.has(f));
 }
-function pickAudio(){
+/* 消費型の抽選。exclude（＝いま鳴っている曲）は引かない。 */
+function pickAudio(exclude){
   const p = audioPool();
   if (!p.length) return null;
-  const c = p.length > 1 ? p.filter(f => f !== lastAudio) : p;
-  return c[Math.floor(Math.random()*c.length)];
-}
-function makeAudioSource(file, when){
-  const { buffer, offset, duration } = buffers.get(file);
-  const G = audioGrid();
-  const s = actx.createBufferSource();
-  s.buffer = buffer;
-  s.loop = true;
-  s.loopStart = offset;
-  s.loopEnd = offset + duration;
-  s.connect(actx.destination);
-  s.start(when, offset);
-  s.stop(when + G);
-  return { source: s, file, when, endTime: when + G };
-}
-/* 次のサンプルを現在の終了時刻ちょうどに予約する */
-function scheduleNextAudio(when){
-  const f = pickAudio();
-  if (!f){ pendAudio = null; return; }
-  lastAudio = f;
-  pendAudio = makeAudioSource(f, when);
-}
-/* 現在のサンプルが終わった瞬間、予約済みが再生中になる */
-function promoteAudio(){
-  if (!audioPlaying) return;
-  if (!pendAudio){ stopAudio(); return; }
-  curAudio = pendAudio;
-  pendAudio = null;
-  nowAudioLabel = audioLabel(curAudio.file);
-  preview();
-  curAudio.source.onended = promoteAudio;
-  scheduleNextAudio(curAudio.endTime);
+  const sig = p.join('|');
+  if (sig !== audioBagSig){ audioBagSig = sig; audioBag = []; }
+  let c = audioBag.filter(f => !exclude.includes(f));
+  if (!c.length){                       // 袋が尽きた／残りが再生中の曲だけ → 作り直す
+    audioBag = shuffle(p.filter(f => !exclude.includes(f)));
+    c = audioBag.slice();
+  }
+  if (!c.length) return null;
+  const f = c[Math.floor(Math.random() * c.length)];
+  audioBag = audioBag.filter(x => x !== f);
+  return f;
 }
 
-async function startAudio(){
+/* 壁時計（ms）→ AudioContext の時計（秒） */
+function ctxTime(atMs){ return actx.currentTime + (atMs - Date.now()) / 1000; }
+
+function startSlot(file, when){
+  const { buffer, offset, duration } = buffers.get(file);
+  const g = actx.createGain();
+  g.gain.setValueAtTime(0, Math.max(0, when - XFADE));
+  g.gain.linearRampToValueAtTime(1, when + XFADE);
+  g.connect(actx.destination);
+  const s = actx.createBufferSource();
+  s.buffer = buffer;
+  s.loop = true;                    // 次に入れ替わるまで鳴り続ける
+  s.loopStart = offset;
+  s.loopEnd = offset + duration;
+  s.connect(g);
+  s.start(Math.max(actx.currentTime, when), offset);
+  return { file, source: s, gain: g };
+}
+function stopSlot(slot, when){
+  try{
+    slot.gain.gain.setValueAtTime(slot.gain.gain.value, Math.max(actx.currentTime, when - XFADE));
+    slot.gain.gain.linearRampToValueAtTime(0, when + XFADE);
+    slot.source.stop(when + XFADE * 2);
+  }catch(e){}
+}
+function audioNowLabel(){
+  const n = slots.map((s, i) => s ? `${'AB'[i]}:${audioLabel(s.file)}` : null).filter(Boolean);
+  return n.join(' / ');
+}
+/* 組の切替時刻ちょうどに、片方のスロットだけ入れ替える */
+function audioAdvance(atMs){
+  if (!audioPlaying || !actx) return;
+  const i = slotTurn;
+  const keep = slots[1-i] ? [slots[1-i].file] : [];      // 維持される側の曲
+  const out  = slots[i]   ? [slots[i].file]   : [];      // これから抜ける側の曲
+  const f = pickAudio(keep.concat(out)) || pickAudio(keep);   // 抜けた曲が即入り直すのも避ける
+  if (!f) return;
+  const when = Math.max(actx.currentTime + 0.02, ctxTime(atMs));
+  if (slots[i]) stopSlot(slots[i], when);
+  slots[i] = startSlot(f, when);
+  slotTurn = 1 - i;
+  nowAudioLabel = audioNowLabel();
+}
+
+async function startAudio(atMs){
   if (!AUDIO_ALL.length) return;
-  try { await loadAudio(); }
+  try { await loadAudio(); await actx.resume(); }
   catch(e){ console.warn('audio 読み込み失敗', e); return; }
   if (!running) return;                       // 読み込み中に停止された
-  const f = pickAudio();
-  if (!f){ nowAudioLabel = ''; preview(); return; }
   audioPlaying = true;
-  lastAudio = f;
-  curAudio = makeAudioSource(f, actx.currentTime + 0.05);
-  nowAudioLabel = audioLabel(f);
-  curAudio.source.onended = promoteAudio;
-  scheduleNextAudio(curAudio.endTime);
+  slots = [null, null];
+  slotTurn = 0;                               // 開始はスロットAから
+  audioBag = [];
+  audioAdvance(Math.max(atMs, Date.now() + 60));
   preview();
 }
 function stopAudio(){
   audioPlaying = false;
-  for (const x of [curAudio, pendAudio]){
-    if (!x) continue;
-    x.source.onended = null;
-    try { x.source.stop(); } catch(e){}
-  }
-  curAudio = pendAudio = null;
+  slots.forEach((x)=>{ if (x){ try{ x.source.stop(); }catch(e){} } });
+  slots = [null, null];
+  slotTurn = 0;
   nowAudioLabel = '';
   if (actx) actx.suspend();
 }
-/* チェック／グリッドの変更は、予約済みの次サンプルに即反映する */
-function repickAudio(){
-  if (!audioPlaying || !actx) return;
-  if (pendAudio && pendAudio.when > actx.currentTime + 0.05){
-    const when = pendAudio.when;
-    pendAudio.source.onended = null;
-    try { pendAudio.source.stop(); } catch(e){}
-    pendAudio = null;
-    lastAudio = curAudio ? curAudio.file : null;
-    scheduleNextAudio(when);
-  } else if (!pendAudio && curAudio && curAudio.endTime > actx.currentTime){
-    scheduleNextAudio(curAudio.endTime);     // 全チェックが外れた後に戻された場合
-  }
-}
-lenChecks.forEach(c => c.addEventListener('change', repickAudio));
-aGrids.forEach(g => g.addEventListener('change', repickAudio));
+/* 「使うサンプル」を変えたら、次の抽選から新しい範囲を使う */
+lenChecks.forEach(c => c.addEventListener('change', ()=>{ audioBag = []; audioBagSig = ''; }));
 
 
 /* =========================================================
@@ -419,7 +468,7 @@ function previewSide(video, canvas, side, v){
 function preview(){
   if (running){
     statusEl.textContent = `再生中　${sideLabel('L', curL)} / ${sideLabel('R', curR)}`
-      + `　映像${videoGrid()}秒 / 音声${audioGrid()}秒`
+      + `　${videoGrid()}秒　${bagLeft()}`
       + (nowAudioLabel ? `　♪ ${nowAudioLabel}` : '');
   }
   if (!previewOn){ clearPreview(); return; }
@@ -431,17 +480,85 @@ function preview(){
 /* =========================================================
    再生制御
    ========================================================= */
-function start(){
+/* 表示ページとは2段階でやり取りする。
+   1) cue … 次に出す項目を伝える。表示ページは読み込みだけ済ませて ready を返す
+   2) go  … 実際に出す壁時計の時刻を伝える。L / R が同じ時刻に再生を始める
+   時刻は同一マシン上の Date.now() を共有するため、左右のズレが出ない。 */
+const START_LEAD = 300;    // 準備完了から再生開始までの余裕（ms）
+const PREP_LEAD  = 1200;   // 切替の何ms前に cue を送るか
+const READY_WAIT = 8000;   // 準備完了を待つ上限（ms）
+
+let cueToken = 0;
+let cueWait  = null;       // 準備完了待ちの状態
+let armed    = null;       // 開始前に仕込んだ cue
+let cuedFor  = 0;          // cue 済みの切替時刻
+let pendingAfter = null;   // cue と一緒に渡した「次の次」
+const liveSides = new Set();   // 開いている表示ページ
+
+function waitReady(token, limit){
+  return new Promise((resolve)=>{
+    if (!liveSides.size){ resolve(); return; }
+    const w = { token, need:new Set(liveSides), got:new Set(), resolve };
+    w.timer = setTimeout(()=>{ if (cueWait === w){ cueWait = null; resolve(); } }, Math.max(100, limit));
+    cueWait = w;
+  });
+}
+function noteReady(side, token){
+  liveSides.add(side);
+  const w = cueWait;
+  if (!w || w.token !== token) return;
+  w.got.add(side);
+  if ([...w.need].every(s => w.got.has(s))){
+    clearTimeout(w.timer); cueWait = null; w.resolve();
+  }
+}
+function sendCue(token, cur, next){
+  ch.postMessage({ type:'cue', token, Lcur:cur[0], Rcur:cur[1], Lnext:next[0], Rnext:next[1], genFiles:GEN_FILES });
+}
+ch.onmessage = (e)=>{
+  const m = e.data || {};
+  if (m.type === 'hello'){
+    liveSides.add(m.side);
+    if (armed) sendCue(armed.token, armed.cur, armed.next);   // 後から開いた画面にも先読みさせる
+    if (running) ch.postMessage({ type:'sync', Lcur:curL, Rcur:curR, Lnext:nextL, Rnext:nextR, genFiles:GEN_FILES });
+  }
+  if (m.type === 'ready') noteReady(m.side, m.token);
+};
+
+/* 開始前の先読み。ペア数が分かった時点で1組引いて読み込ませておく */
+function arm(){
+  if (running || !pool().length) return;
+  resetBags();                               // 新しいサイクルとして引き直す
+  [curL, curR]   = drawNext();
+  [nextL, nextR] = drawNext();
+  armed = { token: ++cueToken, cur:[curL, curR], next:[nextL, nextR] };
+  sendCue(armed.token, armed.cur, armed.next);
+  statusEl.textContent = '待機中（先読み済み）';
+}
+
+async function start(){
   if (!pool().length){
     statusEl.textContent = '再生できる項目がありません（動画も gen も見つかりません）';
     return;
   }
   running = true; startBtn.textContent = '停止';
-  [curL, curR]   = drawNext(0, 0);
-  [nextL, nextR] = drawNext(curL, curR);
-  ch.postMessage({ type:'init', Lcur:curL, Rcur:curR, Lnext:nextL, Rnext:nextR, genFiles:GEN_FILES });
-  startAudio();
-  preview();
+  if (!armed){                               // 先読み済みならその組をそのまま使う
+    resetBags();
+    [curL, curR]   = drawNext();
+    [nextL, nextR] = drawNext();
+  }
+  armed = null;
+  const token = ++cueToken;                  // 改めて cue し、両画面の ready を取り直す
+  sendCue(token, [curL, curR], [nextL, nextR]);
+  statusEl.textContent = '左右の準備を待っています…';
+  await waitReady(token, READY_WAIT);
+  if (!running) return;                    // 待っている間に停止された
+  const at = Date.now() + START_LEAD;
+  ch.postMessage({ type:'go', token, at });
+  lastSwitch = at;
+  cuedFor = 0; pendingAfter = null;
+  startAudio(at);                            // 映像と同じ時刻に1本目（スロットA）を鳴らす
+  setTimeout(()=>{ if (running) preview(); }, Math.max(0, at - Date.now()));
   schedule();
 }
 function stop(){
@@ -450,38 +567,51 @@ function stop(){
   ch.postMessage({ type:'stop' });
   stopAudio();
   statusEl.textContent = '停止中';
-}
-// 次サイクル：cur を次へ進め、新しい next を先読みさせる
-function advance(){
-  curL = nextL; curR = nextR;
-  [nextL, nextR] = drawNext(curL, curR);
-  ch.postMessage({ type:'advance', Lcur:curL, Rcur:curR, Lnext:nextL, Rnext:nextR, genFiles:GEN_FILES });
-  preview();
+  arm();                                   // 次の開始に備えて先読みし直す
 }
 function schedule(){
   clearInterval(timer);
-  lastSwitch = Date.now();
-  // 実時間で経過を判定。0.5秒ごとに現在状態を sync 送信し続けるので、
-  // 表示ページが一度指示を取りこぼしても次の sync で必ず追従する。
-  timer = setInterval(()=>{
-    if(!running) return;
-    if (Date.now() - lastSwitch >= videoGrid()*1000){
-      lastSwitch = Date.now();
-      advance();
-    } else {
-      ch.postMessage({ type:'sync', Lcur:curL, Rcur:curR, Lnext:nextL, Rnext:nextR, genFiles:GEN_FILES });
-    }
-  }, 500);
+  timer = setInterval(tick, 100);
+}
+function tick(){
+  if (!running) return;
+  const now = Date.now();
+  const boundary = lastSwitch + videoGrid()*1000;
+
+  // 境界の手前で次を cue し、準備が整い次第「境界ちょうどに出す」指示を送る
+  if (now >= boundary - PREP_LEAD && cuedFor !== boundary){
+    cuedFor = boundary;
+    const token = ++cueToken;
+    pendingAfter = drawNext();
+    sendCue(token, [nextL, nextR], pendingAfter);
+    audioAdvance(boundary);                  // 片方のスロットを組の切替と同時に入れ替える
+    waitReady(token, boundary - Date.now() - 100).then(()=>{
+      if (running) ch.postMessage({ type:'go', token, at: boundary });
+    });
+  }
+
+  if (now >= boundary){
+    curL = nextL; curR = nextR;
+    [nextL, nextR] = pendingAfter || drawNext();
+    pendingAfter = null;
+    lastSwitch = boundary;
+    preview();
+  } else if (now < boundary - PREP_LEAD){
+    // 取りこぼし復帰用。切替の直前は cue と競合するため送らない。
+    ch.postMessage({ type:'sync', Lcur:curL, Rcur:curR, Lnext:nextL, Rnext:nextR, genFiles:GEN_FILES });
+  }
 }
 
 startBtn.addEventListener('click', ()=> running ? stop() : start());
 modeRandomBtn.addEventListener('click', ()=>{
   mode='random'; modeRandomBtn.classList.add('active'); modePairBtn.classList.remove('active');
+  resetBags(); if (!running) arm();
 });
 modePairBtn.addEventListener('click', ()=>{
   mode='pair'; modePairBtn.classList.add('active'); modeRandomBtn.classList.remove('active');
+  resetBags(); if (!running) arm();
 });
-vGrids.forEach(g => g.addEventListener('change', ()=>{ if(running){ lastSwitch = Date.now(); preview(); } }));
+vGrids.forEach(g => g.addEventListener('change', ()=>{ if(running){ lastSwitch = Date.now(); cuedFor = 0; preview(); } }));
 
 document.getElementById('pvToggle').addEventListener('click', (e)=>{
   previewOn = !previewOn;
@@ -501,6 +631,7 @@ genToggleBtn.addEventListener('click', ()=>{
   genOn = !genOn;
   genToggleBtn.classList.toggle('active', genOn);
   genToggleBtn.textContent = genOn ? 'gen込み' : 'genなし';
+  resetBags(); if (!running) arm();
 });
 
 /* ---- gen: プレビュー用にスクリプトを読み込み、canvas に描画 ---- */
