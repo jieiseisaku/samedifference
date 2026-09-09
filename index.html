@@ -105,12 +105,26 @@
 
   <div id="status">停止中</div>
 
+  <div class="row">
+    <button id="dbgToggle">デバッグ</button>
+    <span id="dbgMsg" class="note"></span>
+  </div>
+  <div id="dbgPanel" style="display:none; margin-bottom:20px;">
+    <div class="row" style="margin-bottom:8px;">
+      <span id="dbgCount" class="note"></span>
+      <button id="dbgSave" class="mini">ログを保存</button>
+      <button id="dbgClear" class="mini">ログを消去</button>
+    </div>
+    <pre id="dbgTail" style="background:#000; border:1px solid #333; border-radius:4px; padding:8px 10px; font-size:11px; line-height:1.6; height:160px; overflow:auto; color:#8b8; white-space:pre-wrap; word-break:break-all;"></pre>
+  </div>
+
   <div class="previews">
     <div class="pv"><h2>L プレビュー</h2><div class="frame"><video id="pvL" muted playsinline loop></video><canvas id="pvgL" width="480" height="270"></canvas></div></div>
     <div class="pv"><h2>R プレビュー</h2><div class="frame"><video id="pvR" muted playsinline loop></video><canvas id="pvgR" width="480" height="270"></canvas></div></div>
   </div>
 </div>
 
+<script src="debug/sd_debug.js"></script>
 <script src="gen/gen_files.js"></script>
 <script src="assets/audio/audio_files.js"></script>
 <script>
@@ -222,6 +236,7 @@ async function detectPairs(){
     : 'assets/video/L_01.mp4 / R_01.mp4 が見つかりません';
   redetectBtn.disabled = false;
   detecting = false;
+  SDDBG.ev('ペア検出', { 数: found.length, 欠番: missing.join(',') || 'なし' });
   arm();                     // 検出できた時点で1組引いて表示ページに先読みさせる
 }
 redetectBtn.addEventListener('click', detectPairs);
@@ -428,6 +443,7 @@ function audioAdvance(atMs){
   const f = pickAudio(keep.concat(out)) || pickAudio(keep);   // 抜けた曲が即入り直すのも避ける
   if (!f) return;
   const when = Math.max(actx.currentTime + 0.02, ctxTime(atMs));
+  dbgAudioSlot(i, f, atMs, when);
   if (slots[i]) stopSlot(slots[i], when);
   slots[i] = startSlot(f, when);
   slotTurn = 1 - i;
@@ -514,7 +530,9 @@ function waitReady(token, limit){
   return new Promise((resolve)=>{
     if (!liveSides.size){ resolve(); return; }
     const w = { token, need:new Set(liveSides), got:new Set(), resolve };
-    w.timer = setTimeout(()=>{ if (cueWait === w){ cueWait = null; resolve(); } }, Math.max(100, limit));
+    w.timer = setTimeout(()=>{ if (cueWait === w){
+      SDDBG.ev('準備待ち切れ', { 必要:[...w.need].sort().join('/'), 完了:[...w.got].sort().join('/') || 'なし', limit }, '!');
+      cueWait = null; resolve(); } }, Math.max(100, limit));
     cueWait = w;
   });
 }
@@ -582,6 +600,9 @@ async function start(){
   lastSwitch = at;
   cuedFor = 0; pendingAfter = null;
   startAudio(at);
+  dbgAudioStart(at);
+  SDDBG.ev('開始', { at: SDDBG.iso(at), 画面: [...liveSides].sort().join('/') || 'なし',
+                     周期: videoGrid(), 項目数: pool().length, 曲数: audioPool().length });
   setTimeout(()=>{ if (running) preview(); }, Math.max(0, at - Date.now()));
   schedule();
 }
@@ -590,6 +611,7 @@ function stop(){
   clearInterval(timer);
   ch.postMessage({ type:'stop' });
   stopAudio();
+  SDDBG.ev('停止', {}, '?');
   statusEl.textContent = '停止中';
   arm();                                   // 次の開始に備えて先読みし直す
 }
@@ -615,6 +637,8 @@ function tick(){
   }
 
   if (now >= boundary){
+    SDDBG.ev('切替', { ズレms: now - boundary, 組: sideLabel('L', nextL)+'/'+sideLabel('R', nextR), 周期: videoGrid() },
+             (now - boundary) > 250 ? '?' : '.');
     curL = nextL; curR = nextR;
     [nextL, nextR] = pendingAfter || drawNext();
     pendingAfter = null;
@@ -682,14 +706,158 @@ genToggleBtn.addEventListener('click', ()=>{
   requestAnimationFrame(pvGenLoop);
 })();
 
-document.getElementById('openL').addEventListener('click', ()=> window.open('display_L.html','sd_L'));
-document.getElementById('openR').addEventListener('click', ()=> window.open('display_R.html','sd_R'));
+const dbgQ = ()=> SDDBG.on ? '?debug=1' : '';
+document.getElementById('openL').addEventListener('click', ()=> window.open('display_L.html'+dbgQ(),'sd_L'));
+document.getElementById('openR').addEventListener('click', ()=> window.open('display_R.html'+dbgQ(),'sd_R'));
 
 document.addEventListener('keydown', (e)=>{
   if(e.target.tagName === 'INPUT') return;
   if(e.key === ' '){ e.preventDefault(); if (actx) actx.resume().catch(()=>{}); running ? stop() : start(); }
-  if(e.key.toLowerCase() === 'n' && running){ lastSwitch = Date.now(); advance(); }
+  if(e.key.toLowerCase() === 'n' && running){        // 次の組へ送る
+    lastSwitch = Date.now() - (videoGrid()*1000 - PREP_LEAD - 300);
+    cuedFor = 0;
+  }
 });
+/* =========================================================
+   デバッグ計測（?debug=1 のときだけ動く）
+
+   control 側で見ているもの:
+     切替時刻のズレ／音の予約が間に合ったか
+     AudioContext の時計と壁時計の開き（音と映像がゆっくりズレる原因）
+     L と R の再生位置の差（10秒ごとに実測）
+     表示ページの生死／メモリ／ログの大きさ
+   デバッグ中は control のウィンドウを最小化しないこと（時計が鈍る）。
+   ========================================================= */
+let dbgCtx0 = 0, dbgWall0 = 0;
+function dbgAudioStart(atMs){
+  if (!SDDBG.on || !actx) return;
+  dbgCtx0 = actx.currentTime; dbgWall0 = Date.now();
+  SDDBG.ev('音開始', { at: SDDBG.iso(atMs), 遅延: Math.round((actx.outputLatency || actx.baseLatency || 0)*1000) });
+}
+function dbgDrift(){
+  if (!actx || !dbgCtx0) return 0;
+  return Math.round((actx.currentTime - dbgCtx0)*1000 - (Date.now() - dbgWall0));
+}
+function dbgWallOf(ctxT){ return Date.now() + (ctxT - actx.currentTime)*1000; }
+function dbgAudioSlot(i, file, atMs, when){
+  if (!SDDBG.on || !actx) return;
+  const lat = (actx.outputLatency || actx.baseLatency || 0) * 1000;
+  const err = Math.round(dbgWallOf(when) + lat - atMs);   // 実際に音が出る瞬間で測る
+  const 詰まり = when <= actx.currentTime + 0.021;
+  SDDBG.ev('音', { スロット:'AB'[i], 曲: audioLabel(file), ズレms: err, 累積ms: dbgDrift(), 間に合わず: 詰まり ? 1 : 0 },
+    (詰まり || Math.abs(err) > 80) ? '!' : (Math.abs(err) > 30 ? '?' : '.'));
+}
+
+if (SDDBG.on){
+  const D = SDDBG;
+  D.state = ()=> (running ? 'run '+sideLabel('L',curL)+'/'+sideLabel('R',curR) : 'idle')
+                 + (actx ? ','+actx.state : '');
+
+  /* ---- L / R の再生位置を10秒ごとに突き合わせる ---- */
+  let probeId = 0;
+  const probes = {};
+  const seen = { L:0, R:0 };
+  if (D.bus) D.bus.addEventListener('message', (e)=>{
+    const m = e.data || {};
+    if (m.type === 'dbgline'){ seen[m.side] = Date.now(); return; }
+    if (m.type !== 'probeR') return;
+    seen[m.side] = Date.now();
+    const p = probes[m.id];
+    if (p) p[m.side] = m;
+  });
+  setInterval(()=>{
+    if (!running || !D.bus) return;
+    const id = ++probeId;
+    probes[id] = {};
+    D.bus.postMessage({ type:'probe', id });
+    setTimeout(()=>{
+      const r = probes[id]; delete probes[id];
+      if (!r) return;
+      const got = Object.keys(r).sort().join('');
+      if (got !== 'LR'){ D.ev('点呼なし', { 返答: got || 'なし' }, '!'); return; }
+      if (String(r.L.item) !== String(r.R.item)) D.ev('項目不一致', { L: r.L.item, R: r.R.item }, '!');
+      if ((r.L.ct >= 0 && r.L.paused) || (r.R.ct >= 0 && r.R.paused))
+        D.ev('停止中', { L: r.L.paused, R: r.R.paused, Lct: r.L.ct, Rct: r.R.ct }, '!');
+      if (r.L.ct >= 0 && r.R.ct >= 0){
+        const diff = Math.round((r.L.ct - r.R.ct)*1000 - (r.L.t - r.R.t));
+        D.ev('左右差', { item: sideLabel('L', curL), ms: diff, Lct: r.L.ct, Rct: r.R.ct },
+          Math.abs(diff) > 60 ? '!' : (Math.abs(diff) > 25 ? '?' : '.'));
+      }
+    }, 500);
+  }, 10000);
+
+  /* ---- 表示ページの生死 ---- */
+  setInterval(()=>{
+    if (!running) return;
+    ['L','R'].forEach((s)=>{
+      if (seen[s] && Date.now() - seen[s] > 30000){
+        D.ev('無応答', { side: s, 経過ms: Date.now() - seen[s] }, '!');
+        seen[s] = Date.now();
+      }
+    });
+  }, 5000);
+
+  /* ---- 1分ごとの生存記録 ---- */
+  setInterval(()=>{
+    const m = performance.memory;
+    D.ev('60秒', { 再生: running ? 1 : 0, 音時計ms: dbgDrift(), actx: actx ? actx.state : '-',
+                   mem: m ? Math.round(m.usedJSHeapSize/1048576) : '', logKB: Math.round(D.bytes()/1024) },
+         Math.abs(dbgDrift()) > 200 ? '?' : '.');
+  }, 60000);
+
+  /* ---- 画面下のパネル ---- */
+  const panel = document.getElementById('dbgPanel');
+  const tail = document.getElementById('dbgTail');
+  const cnt = document.getElementById('dbgCount');
+  panel.style.display = '';
+  const buf = [];
+  const paint = ()=>{
+    cnt.textContent = '異常 '+D.counts['!']+'　注意 '+D.counts['?']+'　記録 '
+      + (D.counts['.']+D.counts['?']+D.counts['!'])+'　'+Math.round(D.bytes()/1024)+'KB';
+  };
+  D.onLine((line)=>{
+    const p = line.split('\t');
+    buf.push(p[1]+' '+p[2]+' '+p[3]+'  '+(p[4]||'').slice(0,110));
+    if (buf.length > 60) buf.shift();
+  });
+  if (D.bus) D.bus.addEventListener('message', (e)=>{
+    const m = e.data || {};
+    if (m.type !== 'dbgline') return;
+    const p = m.line.split('\t');
+    buf.push(p[1]+' '+p[2]+' '+p[3]+'  '+(p[4]||'').slice(0,110));
+    if (buf.length > 60) buf.shift();
+  });
+  setInterval(()=>{
+    paint();
+    const atBottom = tail.scrollTop + tail.clientHeight >= tail.scrollHeight - 20;
+    tail.textContent = buf.join('\n');
+    if (atBottom) tail.scrollTop = tail.scrollHeight;
+  }, 1000);
+  document.getElementById('dbgSave').addEventListener('click', ()=>{
+    const n = D.download();
+    document.getElementById('dbgMsg').textContent = n + ' を保存しました';
+  });
+  document.getElementById('dbgClear').addEventListener('click', ()=>{
+    D.clear(); buf.length = 0; tail.textContent = ''; paint();
+    document.getElementById('dbgMsg').textContent = 'ログを消去しました';
+  });
+}
+
+/* ---- デバッグの切り替え（読み込み直しで反映） ---- */
+(function(){
+  const btn = document.getElementById('dbgToggle');
+  const msg = document.getElementById('dbgMsg');
+  btn.classList.toggle('active', SDDBG.on);
+  btn.textContent = SDDBG.on ? 'デバッグ中' : 'デバッグ';
+  msg.textContent = SDDBG.on
+    ? '記録中。表示ページも ?debug=1 付きで開き直してください'
+    : '';
+  btn.addEventListener('click', ()=>{
+    const u = new URL(location.href);
+    u.searchParams.set('debug', SDDBG.on ? '0' : '1');
+    location.href = u.toString();
+  });
+})();
 </script>
 </body>
 </html>

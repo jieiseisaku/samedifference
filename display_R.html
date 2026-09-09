@@ -34,6 +34,7 @@
 </div>
 <div id="wait">コントロール画面の待機中…</div>
 
+<script src="debug/sd_debug.js"></script>
 <script>
 /* =========================================================
    R 表示ページ
@@ -85,6 +86,8 @@ let targetNum = -1;     // 切り替え中の目標項目
 let gen = 0;            // 最新指示のみ有効にする世代番号
 let genClipId = null;   // canvas に描画中の gen クリップID
 let swapping = false;   // ループ交代の実行中
+let switching = false;  // 項目の切替中（出しかけの絵を見張りに消させない）
+let switchDeadline = 0; // 切替の期限（これを過ぎたら見張りを再開する）
 let swapDeadline = 0;   // 交代の期限（これを過ぎたら失敗とみなす）
 
 function num(n){ return String(n).padStart(PAD, '0'); }
@@ -240,6 +243,10 @@ function tryLoopSwap(){
    崩れていれば直す。読み込めていないレイヤーは表に出さない。
    ========================================================= */
 function heal(){
+  if (switching){                         // 切替の最中は触らない
+    if (performance.now() < switchDeadline) return;
+    switching = false;                    // 期限切れは失敗として解除
+  }
   if (swapping){
     if (performance.now() < swapDeadline) return;
     swapping = false;                       // 全画面切り替え等で交代が固まった場合
@@ -284,10 +291,10 @@ function heal(){
     if (alt){ alt.classList.add('show'); hideAllExcept(alt); playSafe(alt); }
   }
 }
-setInterval(heal, HEAL_MS);
+setInterval(()=> heal(), HEAL_MS);
 layers.forEach((v)=>{
   v.addEventListener('ended', ()=>{ if (v.classList.contains('show')) heal(); });
-  v.addEventListener('pause', ()=>{ if (v.classList.contains('show')) setTimeout(heal, 0); });
+  v.addEventListener('pause', ()=>{ if (v.classList.contains('show')) setTimeout(()=> heal(), 0); });
 });
 document.addEventListener('fullscreenchange', ()=>{ swapping = false; heal(); });
 document.addEventListener('visibilitychange', ()=>{ if (!document.hidden) heal(); });
@@ -357,6 +364,8 @@ function show(cur, next){
 
   const myGen = ++gen;
   swapping = false;                          // 進行中の交代は無効化
+  switching = true;                          // ここから切替。完了まで見張りを止める
+  switchDeadline = performance.now() + 1500;
   targetNum = cur;
 
   /* ---- gen を表示 ---- */
@@ -373,6 +382,7 @@ function show(cur, next){
         layers.forEach((v)=>{ v.classList.remove('show'); v.classList.remove('top'); try{ v.pause(); }catch(e){} });
         shownNum = cur;
         preload(next);
+        switching = false;
       }));
     };
     tryShow();
@@ -409,6 +419,7 @@ function show(cur, next){
         [oldA, oldB].forEach((i)=>{ try{ layers[i].currentTime = 0; }catch(e){} layers[i].loop = true; });
       });
       preload(next);
+      switching = false;
     }));
   };
 
@@ -493,6 +504,199 @@ document.addEventListener('keydown', (e)=>{
     else document.exitFullscreen();
   }
 });
+/* =========================================================
+   デバッグ計測（?debug=1 のときだけ動く）
+
+   ここは表示だけを見張る。既定では何もしない。
+   見ているもの:
+     黒（表示が1枚も無い瞬間）／実際の絵が真っ黒／絵が固まっている
+     再生位置が進まない／勝手に頭出しされた／勝手に止まった
+     media 要素のエラー・待ち／読み込みにかかった時間
+     go の指定時刻からの遅れ／表示が出るまでの時間
+     見張り（heal）が直しに入った回数と、その前後の状態
+   ========================================================= */
+if (window.SDDBG && SDDBG.on){
+  const D = SDDBG;
+  const dlabel = (v)=> (v === -1 || v === undefined) ? '-' : (isGen(v) ? v : (SIDE+'_'+num(v)));
+
+  const dvisible = ()=>{
+    const vs = [...layers].filter(x => x.classList.contains('show'));
+    if (genCanvas.classList.contains('show')) return { el: genCanvas, n: vs.length + 1, gen: true };
+    const hit = vs.find(x => x.dataset.num === String(shownNum));   // 切替の重なり中は今の項目を優先
+    return { el: hit || vs[0] || null, n: vs.length, gen: false };
+  };
+  const dsnap = ()=> [...layers].map(v =>
+      (v.classList.contains('show') ? 'S' : '-') + (v.paused ? 'p' : 'r') + (v.dataset.num || '?')
+    ).join(',') + (genCanvas.classList.contains('show') ? '|G' : '|-');
+
+  D.state = ()=>{
+    const v = dvisible();
+    return dlabel(shownNum) + ',' + v.n + (v.el && !v.gen ? ','+v.el.currentTime.toFixed(2) : '');
+  };
+
+  /* ---- 表示が1枚も無い時間・2枚以上重なっている時間を測る ---- */
+  let blackFrom = 0, overFrom = 0;
+  const mo = new MutationObserver(()=>{
+    if (shownNum === -1) return;
+    const n = dvisible().n;
+    const now = performance.now();
+    if (n === 0){ if (!blackFrom) blackFrom = now; }
+    else if (blackFrom){
+      const ms = now - blackFrom; blackFrom = 0;
+      if (ms > 20) D.ev('黒', { item: dlabel(shownNum), ms }, ms > 100 ? '!' : '?');
+    }
+    if (n > 1){ if (!overFrom) overFrom = now; }
+    else if (overFrom){
+      const ms = now - overFrom; overFrom = 0;
+      if (ms > 400) D.ev('重なり', { item: dlabel(shownNum), ms }, ms > 1000 ? '!' : '?');
+    }
+  });
+  [...layers, genCanvas].forEach(el => mo.observe(el, { attributes:true, attributeFilter:['class'] }));
+
+  /* ---- 実際に描かれている絵を見る（真っ黒・固まり） ---- */
+  const probe = document.createElement('canvas');
+  probe.width = 32; probe.height = 18;
+  const pctx = probe.getContext('2d', { willReadFrequently: true });
+  let lastCt = -1, stallFrom = 0, sameSig = -1, sameCount = 0, blackCount = 0, badFrom = 0, lastEl = null;
+  let reported = {};                       // 項目ごとに1回だけ報告する
+  let lastItem = null;
+
+  setInterval(()=>{
+    if (shownNum === -1) return;
+    const now = performance.now();
+    const item = dlabel(shownNum);
+    if (item !== lastItem){ lastItem = item; reported = {}; sameCount = 0; blackCount = 0; sameSig = -1; lastCt = -1; stallFrom = 0; }
+    const vis = dvisible();
+    if (vis.n !== 1){                      // 表示が0枚または2枚以上のまま戻らない場合の保険
+      if (!badFrom) badFrom = now;
+      else if (now - badFrom > 3000 && !reported.badN){ reported.badN = 1; D.ev('表示数', { item, n: vis.n, ms: now - badFrom }, '!'); }
+    } else badFrom = 0;
+    if (!vis.el) return;                   // 黒は MutationObserver 側で記録済み
+    if (vis.el !== lastEl){ lastEl = vis.el; lastCt = -1; stallFrom = 0; sameSig = -1; sameCount = 0; }
+
+    if (!vis.gen){
+      const v = vis.el;
+      if (v.paused && !reported.paused){ reported.paused = 1; D.ev('止まった', { item, ct: v.currentTime, ready: v.readyState }, '!'); }
+      if (lastCt >= 0){
+        if (v.currentTime < lastCt - 0.05){
+          const wrapped = v.duration && lastCt > v.duration - 1.2;
+          if (!wrapped) D.ev('巻き戻り', { item, from: lastCt, to: v.currentTime, dur: v.duration }, '!');
+        } else if (v.currentTime === lastCt && !v.paused){
+          if (!stallFrom) stallFrom = now;
+          else if (now - stallFrom > 900){
+            D.ev('進まない', { item, ct: v.currentTime, ms: now - stallFrom, ready: v.readyState, net: v.networkState }, '!');
+            stallFrom = now;
+          }
+        } else stallFrom = 0;
+      }
+      lastCt = v.currentTime;
+    }
+
+    try{
+      pctx.drawImage(vis.el, 0, 0, 32, 18);
+      const d = pctx.getImageData(0, 0, 32, 18).data;
+      let sum = 0, mx = 0;
+      for (let i = 0; i < d.length; i += 4){
+        const y = d[i]*0.3 + d[i+1]*0.59 + d[i+2]*0.11;
+        sum += y; if (y > mx) mx = y;
+      }
+      if (mx < 8){
+        if (++blackCount === 3 && !reported.black){ reported.black = 1; D.ev('真っ黒', { item, 平均: sum/(32*18) }, '!'); }
+      } else blackCount = 0;
+      const sig = Math.round(sum);
+      if (!vis.gen){                       // gen は1秒に1回しか絵が変わらないので対象外
+        if (sig === sameSig){
+          if (++sameCount === 4 && !reported.frozen){ reported.frozen = 1; D.ev('絵が固まる', { item, ct: vis.el.currentTime }, '?'); }
+        } else sameCount = 0;
+      }
+      sameSig = sig;
+    }catch(e){}
+  }, 500);
+
+  /* ---- media 要素の異常 ---- */
+  ['stalled','waiting','error','abort','emptied'].forEach((t)=>{
+    layers.forEach((v, i)=>{
+      v.addEventListener(t, ()=>{
+        const shown = v.classList.contains('show');
+        D.ev('media', { e:t, layer:i, 表示: shown ? 1 : 0, item: v.dataset.num, ready: v.readyState, err: v.error ? v.error.code : '' },
+             (t === 'error') ? '!' : (shown ? '?' : '.'));
+      });
+    });
+  });
+
+  /* ---- 見張りが直しに入ったら残す ---- */
+  const _heal = heal;
+  heal = function(){
+    const a = dsnap();
+    _heal();
+    const b = dsnap();
+    if (a !== b) D.ev('直した', { item: dlabel(shownNum), 前: a, 後: b }, '?');
+  };
+
+  /* ---- 読み込みにかかった時間 ---- */
+  const _prepare = prepare;
+  prepare = function(item){
+    const t0 = performance.now();
+    return _prepare(item).then((r)=>{
+      const ms = performance.now() - t0;
+      D.ev('読み込み', { item: dlabel(item), ms }, ms > 5000 ? '!' : (ms > 2000 ? '?' : '.'));
+      return r;
+    });
+  };
+
+  /* ---- go の時刻からの遅れ ---- */
+  const _fireAt = fireAt;
+  fireAt = function(at, run){
+    _fireAt(at, ()=>{
+      const late = Date.now() - at;
+      D.ev('go', { 遅れms: late }, Math.abs(late) > 30 ? '?' : '.');
+      run();
+    });
+  };
+
+  /* ---- 表示が実際に出るまで ---- */
+  const _show = show;
+  show = function(cur, next){
+    const t0 = Date.now();
+    const from = dlabel(shownNum);
+    _show(cur, next);
+    let tries = 0;
+    const watch = ()=>{
+      if (shownNum === cur){
+        const el = isGen(cur) ? null : layers[vA];
+        const done = ()=>{
+          const ms = Date.now() - t0;
+          D.ev('表示', { item: dlabel(cur), 前: from, ms }, ms > 400 ? '?' : '.');
+        };
+        if (el && el.requestVideoFrameCallback) el.requestVideoFrameCallback(()=> done());
+        else done();
+        return;
+      }
+      if (tries++ < 250) setTimeout(watch, 20);
+      else D.ev('表示できず', { item: dlabel(cur), ms: Date.now() - t0 }, '!');
+    };
+    watch();
+  };
+
+  /* ---- control からの点呼に答える（左右のズレの実測用） ---- */
+  if (D.bus) D.bus.addEventListener('message', (e)=>{
+    const m = e.data || {};
+    if (m.type !== 'probe') return;
+    const v = (shownNum === -1 || isGen(shownNum)) ? null : layers[vA];
+    D.bus.postMessage({
+      type:'probeR', id:m.id, side:SIDE, t:Date.now(),
+      item: shownNum, ct: v ? v.currentTime : -1, dur: v ? (v.duration || 0) : 0,
+      paused: v ? (v.paused ? 1 : 0) : 1, ready: v ? v.readyState : -1, n: dvisible().n
+    });
+  });
+
+  /* ---- 1分ごとの生存記録 ---- */
+  setInterval(()=>{
+    const v = dvisible();
+    D.ev('60秒', { item: dlabel(shownNum), 表示数: v.n, ct: (v.el && !v.gen) ? v.el.currentTime : -1,
+                   全画面: document.fullscreenElement ? 1 : 0 });
+  }, 60000);
+}
 </script>
 </body>
 </html>
