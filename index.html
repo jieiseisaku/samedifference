@@ -491,14 +491,25 @@ function preview(){
    1) cue … 次に出す項目を伝える。表示ページは読み込みだけ済ませて ready を返す
    2) go  … 実際に出す壁時計の時刻を伝える。L / R が同じ時刻に再生を始める
    時刻は同一マシン上の Date.now() を共有するため、左右のズレが出ない。 */
-const START_LEAD = 300;    // 準備完了から再生開始までの余裕（ms）
-const PREP_LEAD  = 1200;   // 切替の何ms前に cue を送るか
-const READY_WAIT = 40000;  // 準備完了を待つ上限（ms）実尺の動画を読み切るまで待つ
+const START_LEAD  = 300;    // 準備完了から再生開始までの余裕（ms）
+const PREP_LEAD   = 20000;  // 切替の何ms前に cue を送るか（実尺の読み込みを待たせる）
+const PREP_MIN    = 1200;   // cue の下限（周期が短いとき用）
+const PREP_TAIL   = 5000;   // 周期のうち sync に残す時間（ms）
+const MANUAL_LEAD = 1500;   // n キーで送るときの猶予（ms）
+const AUDIO_LEAD  = 2000;   // 音声を予約する余裕（ms）映像の cue とは独立
+const READY_WAIT  = 40000;  // 準備完了を待つ上限（ms）実尺の動画を読み切るまで待つ
+
+/* cue のリードは周期に収める。30秒周期なら20秒前、15秒周期なら10秒前。 */
+function prepLead(){
+  return Math.max(PREP_MIN, Math.min(PREP_LEAD, videoGrid()*1000 - PREP_TAIL));
+}
 
 let cueToken = 0;
 let cueWait  = null;       // 準備完了待ちの状態
 let armed    = null;       // 開始前に仕込んだ cue
 let cuedFor  = 0;          // cue 済みの切替時刻
+let audioCuedFor = 0;      // 音声を予約済みの切替時刻
+let showLoadStatus = false;// 開始時の読み込み表示中か
 let pendingAfter = null;   // cue と一緒に渡した「次の次」
 const liveSides = new Set();   // 開いている表示ページ
 
@@ -517,8 +528,9 @@ function noteReady(side, token){
   const w = cueWait;
   if (!w || w.token !== token) return;
   w.got.add(side);
-  if (!running || w.got.size >= w.need.size) { /* 表示は下で更新 */ }
-  else statusEl.textContent = `読み込み中…（完了 ${[...w.got].sort().join(' / ')}）`;
+  // 読み込みの進み具合は開始時だけ出す（稼働中は cue が20秒前に出るため上書きしない）
+  if (showLoadStatus && w.got.size < w.need.size)
+    statusEl.textContent = `読み込み中…（完了 ${[...w.got].sort().join(' / ')}）`;
   if ([...w.need].every(s => w.got.has(s))){
     clearTimeout(w.timer); cueWait = null; w.resolve();
   }
@@ -569,16 +581,19 @@ async function start(){
   statusEl.textContent = liveSides.size
     ? `読み込み中…（${[...liveSides].sort().join(' / ')}）`
     : '表示ページが見つかりません（先に L / R を開いてください）';
+  showLoadStatus = true;
   await Promise.all([ waitReady(token, READY_WAIT), prepareAudio() ]);
+  showLoadStatus = false;
   if (!running) return;                    // 待っている間に停止された
   const at = Date.now() + START_LEAD;       // 映像・音声ともこの時刻ちょうどに始める
   ch.postMessage({ type:'go', token, at });
   lastSwitch = at;
-  cuedFor = 0; pendingAfter = null;
+  cuedFor = 0; audioCuedFor = 0; pendingAfter = null;
   startAudio(at);
   dbgAudioStart(at);
   SDDBG.ev('開始', { at: SDDBG.iso(at), 画面: [...liveSides].sort().join('/') || 'なし',
-                     周期: videoGrid(), 項目数: pool().length, 曲数: audioPool().length });
+                     周期: videoGrid(), cue秒: prepLead()/1000,
+                     項目数: pool().length, 曲数: audioPool().length });
   setTimeout(()=>{ if (running) preview(); }, Math.max(0, at - Date.now()));
   schedule();
 }
@@ -599,17 +614,23 @@ function tick(){
   if (!running) return;
   const now = Date.now();
   const boundary = lastSwitch + videoGrid()*1000;
+  const lead = prepLead();
 
   // 境界の手前で次を cue し、準備が整い次第「境界ちょうどに出す」指示を送る
-  if (now >= boundary - PREP_LEAD && cuedFor !== boundary){
+  if (now >= boundary - lead && cuedFor !== boundary){
     cuedFor = boundary;
     const token = ++cueToken;
     pendingAfter = drawNext();
     sendCue(token, [nextL, nextR], pendingAfter);
-    audioAdvance(boundary);                  // 片方のスロットを組の切替と同時に入れ替える
     waitReady(token, boundary - Date.now() - 100).then(()=>{
       if (running) ch.postMessage({ type:'go', token, at: boundary });
     });
+  }
+
+  // 音声の予約は映像の cue と切り離し、切替の直前で行う
+  if (now >= boundary - AUDIO_LEAD && audioCuedFor !== boundary){
+    audioCuedFor = boundary;
+    audioAdvance(boundary);                  // 片方のスロットを組の切替と同時に入れ替える
   }
 
   if (now >= boundary){
@@ -620,7 +641,7 @@ function tick(){
     pendingAfter = null;
     lastSwitch = boundary;
     preview();
-  } else if (now < boundary - PREP_LEAD){
+  } else if (now < boundary - lead){
     // 取りこぼし復帰用。切替の直前は cue と競合するため送らない。
     ch.postMessage({ type:'sync', Lcur:curL, Rcur:curR, Lnext:nextL, Rnext:nextR, genFiles:GEN_FILES });
   }
@@ -638,7 +659,7 @@ modePairBtn.addEventListener('click', ()=>{
   mode='pair'; modePairBtn.classList.add('active'); modeRandomBtn.classList.remove('active');
   resetBags(); if (!running) arm();
 });
-vGrids.forEach(g => g.addEventListener('change', ()=>{ if(running){ lastSwitch = Date.now(); cuedFor = 0; preview(); } }));
+vGrids.forEach(g => g.addEventListener('change', ()=>{ if(running){ lastSwitch = Date.now(); cuedFor = 0; audioCuedFor = 0; preview(); } }));
 
 document.getElementById('pvToggle').addEventListener('click', (e)=>{
   previewOn = !previewOn;
@@ -690,8 +711,8 @@ document.addEventListener('keydown', (e)=>{
   if(e.target.tagName === 'INPUT') return;
   if(e.key === ' '){ e.preventDefault(); if (actx) actx.resume().catch(()=>{}); running ? stop() : start(); }
   if(e.key.toLowerCase() === 'n' && running){        // 次の組へ送る
-    lastSwitch = Date.now() - (videoGrid()*1000 - PREP_LEAD - 300);
-    cuedFor = 0;
+    lastSwitch = Date.now() - (videoGrid()*1000 - MANUAL_LEAD);
+    cuedFor = 0; audioCuedFor = 0;
   }
 });
 /* =========================================================

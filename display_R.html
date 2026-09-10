@@ -57,6 +57,8 @@
      requestAnimationFrame が止まる全画面切り替え中でも動くよう、
      見張りは setInterval とイベントの両方から動かす。
    - 読み込めていないレイヤーは決して表に出さない（黒を出さない）。
+   - 動画は fetch で丸ごと取得してから video に渡す。src に URL を直接
+     入れると、読み込み途中から再生が始まる経路が残るため。
 
    音声はこの画面では一切鳴らさない（常時ミュート）。
    ========================================================= */
@@ -74,6 +76,58 @@ const LOOP_LEAD   = 0.08;     // 相方を先行スタートする余裕（秒�
 const SWAP_TIMEOUT  = 150;    // 交代をあきらめるまで（ms）。遅れた交代は必ず捨てる。
 const HEAL_MS       = 250;    // 見張りの間隔（ms）
 const BUFFER_WAIT   = 30000;  // 読み込みを待つ上限（ms）
+
+/* =========================================================
+   動画の取得（fetch で丸ごと取ってから video に渡す）
+
+   src に URL を直接入れるとブラウザの判断で読み込み途中から再生が始まり、
+   読み切れていない状態で表に出ることがある。ここで一度 blob として
+   丸ごと受け取り、手元にある動画だけを video 要素へ割り当てる。
+   保持は「いま出している分」と「先読み分」だけで、それ以外は捨てる。
+   ========================================================= */
+const clipBlobs = new Map();      // 番号 -> blob URL（取得済み）
+const clipFetch = new Map();      // 番号 -> 取得中の Promise
+
+function clipURL(i){ return clipBlobs.get(String(i)) || null; }
+function fetchClip(i){
+  const k = String(i);
+  if (clipBlobs.has(k)) return Promise.resolve(clipBlobs.get(k));
+  if (clipFetch.has(k)) return clipFetch.get(k);
+  const t0 = Date.now();
+  const p = fetch(src(i))
+    .then(r => { if (!r.ok) throw new Error(r.status); return r.blob(); })
+    .then(b => {
+      const u = URL.createObjectURL(b);
+      clipBlobs.set(k, u); clipFetch.delete(k);
+      const ms = Date.now() - t0;
+      if (window.SDDBG) SDDBG.ev('取得', { item: SIDE+'_'+num(i), MB: +(b.size/1048576).toFixed(1), ms },
+                                 ms > 20000 ? '!' : (ms > 10000 ? '?' : '.'));
+      return u;
+    })
+    .catch(e => {
+      clipFetch.delete(k);
+      console.warn('動画の取得に失敗:', src(i), e);
+      if (window.SDDBG) SDDBG.ev('取得失敗', { item: SIDE+'_'+num(i), 理由: String(e && e.message || e) }, '!');
+      return null;
+    });
+  clipFetch.set(k, p);
+  return p;
+}
+/* keep に無い動画を捨てる。表に出ていないレイヤーが握っていれば先に外す。 */
+function trimClips(keep){
+  const k = new Set((keep || []).filter(v => v !== null && v !== undefined && !isGen(v)).map(String));
+  layers.forEach(v => { if (v.classList.contains('show') && v.dataset.num) k.add(v.dataset.num); });
+  [...clipBlobs.keys()].forEach((n)=>{
+    if (k.has(n)) return;
+    layers.forEach((v)=>{
+      if (v.dataset.num !== n || v.classList.contains('show')) return;
+      try{ v.pause(); }catch(e){}
+      v.removeAttribute('src'); v.dataset.num = ''; try{ v.load(); }catch(e){}
+    });
+    URL.revokeObjectURL(clipBlobs.get(n));
+    clipBlobs.delete(n);
+  });
+}
 
 const layers = document.querySelectorAll('.layer');
 const genCanvas = document.getElementById('genLayer');
@@ -94,15 +148,19 @@ function num(n){ return String(n).padStart(PAD, '0'); }
 function src(i){ return `${VIDEO_DIR}${SIDE}_${num(i)}.mp4`; }
 function isGen(v){ return typeof v === 'string'; }
 
-/* 動画をレイヤーに割り当てる。常に loop = true（安全網） */
+/* 動画をレイヤーに割り当てる。常に loop = true（安全網）
+   取得できていない動画は割り当てず、取得を始めて false を返す。 */
 function setLayer(layer, i){
-  if (layer.dataset.num === String(i) && layer.src){ layer.loop = true; return; }
+  const u = clipURL(i);
+  if (!u){ fetchClip(i); return false; }
+  if (layer.dataset.num === String(i) && layer.src === u){ layer.loop = true; return true; }
   layer.loop = true;
   layer.muted = true;
   layer.preload = 'auto';
   layer.dataset.num = String(i);
-  layer.src = src(i);
+  layer.src = u;
   layer.load();
+  return true;
 }
 function playSafe(v){ v.muted = true; const p = v.play(); if (p && p.catch) p.catch(()=>{}); }
 /* 表に出ていないレイヤーだけ、止めて先頭に戻す。
@@ -305,7 +363,10 @@ document.addEventListener('visibilitychange', ()=>{ if (!document.hidden) heal()
 
 /* 次項目の先読み。vid のみ対象（gen は即出せる） */
 function preload(next){
-  if (!isGen(next) && next && layers[vP] !== layers[vA]) setLayer(layers[vP], next);
+  if (isGen(next) || next === null || next === undefined) return;
+  fetchClip(next).then((u)=>{
+    if (u && layers[vP] !== layers[vA]) setLayer(layers[vP], next);
+  });
 }
 
 /* cue された項目を「すぐ出せる」状態まで用意する。
@@ -318,7 +379,6 @@ function prepare(item){
       return;
     }
     const v = layers[vP];
-    setLayer(v, item);
     const t0 = Date.now();
     let done = false;
     const finish = ()=>{ if (done) return; done = true; resolve(); };
@@ -353,7 +413,12 @@ function prepare(item){
     };
     v.addEventListener('error', finish, { once: true });
     setTimeout(finish, BUFFER_WAIT + 4000);
-    poll();
+    fetchClip(item).then((u)=>{
+      if (done) return;
+      if (!u){ finish(); return; }        // 取得できなければ ready を返し、見張りに任せる
+      setLayer(v, item);
+      poll();
+    });
   });
 }
 
@@ -391,7 +456,9 @@ function show(cur, next){
 
   /* ---- 動画を表示 ---- */
   const showV = layers[vP];
-  setLayer(showV, cur);
+  if (!setLayer(showV, cur)){
+    fetchClip(cur).then(()=>{ if (myGen === gen) setLayer(showV, cur); });
+  }
 
   const reveal = ()=>{
     if (myGen !== gen) return;
@@ -419,6 +486,7 @@ function show(cur, next){
         [oldA, oldB].forEach((i)=>{ try{ layers[i].currentTime = 0; }catch(e){} layers[i].loop = true; });
       });
       preload(next);
+      trimClips([cur, next]);
       switching = false;
     }));
   };
@@ -469,6 +537,7 @@ ch.onmessage = (e)=>{
   if (m.type === 'cue'){
     const c = { token:m.token, cur:m[SIDE+'cur'], next:m[SIDE+'next'] };
     cued = c; lastCueAt = Date.now();
+    trimClips([shownNum, c.cur, c.next]);
     if (shownNum === -1) waitEl.textContent = '読み込み中…';
     prepare(c.cur).then(()=>{
       if (cued !== c) return;
