@@ -172,20 +172,28 @@
     lines.sort((a,b)=> Number(a.split('\t')[0]) - Number(b.split('\t')[0]));
     return lines;
   }
-  function pretty(l){
+  function span(ms){
+    const s = Math.max(0, Math.floor(ms/1000));
+    const p = (n)=> String(n).padStart(2,'0');
+    return (ms < 0 ? '-' : '+') + Math.floor(Math.abs(s)/3600)+':'+p(Math.floor(Math.abs(s)/60)%60)+':'+p(Math.abs(s)%60);
+  }
+  function pretty(l, base){
     const p = l.split('\t');
-    return iso(p[0])+'  '+p[1]+' '+p[2]+' '+p[3]+'  '+(p[4]||'');
+    return iso(p[0])+(base ? '  '+span(Number(p[0]) - base) : '')+'  '+p[1]+' '+p[2]+' '+p[3]+'  '+(p[4]||'');
   }
   function report(){
     const lines = collect();
     const bad = lines.filter(l => l.split('\t')[2] !== '.');
     const t0 = lines.length ? Number(lines[0].split('\t')[0]) : Date.now();
     const t1 = lines.length ? Number(lines[lines.length-1].split('\t')[0]) : Date.now();
+    const started = lines.find(l => l.split('\t')[3] === '開始');   // 再生開始を経過時間の起点にする
+    const base = started ? Number(started.split('\t')[0]) : t0;
     const tags = {};
     lines.forEach(l => { const p = l.split('\t'); const k = p[1]+'  '+p[2]+' '+p[3]; tags[k] = (tags[k]||0)+1; });
     const out = [];
     out.push('same difference — デバッグログ');
     out.push('期間: '+iso(t0)+' 〜 '+iso(t1)+'（'+hms(t1-t0)+'）');
+    if (started) out.push('再生開始: '+iso(base)+'　以後の稼働 '+hms(t1-base));
     out.push('記録 '+lines.length+'件　異常(!) '+lines.filter(l=>l.split('\t')[2]==='!').length
             +'件　注意(?) '+lines.filter(l=>l.split('\t')[2]==='?').length+'件');
     ['C','L','R'].forEach(r=>{
@@ -196,8 +204,8 @@
     out.push('― 内訳 ―');
     Object.keys(tags).sort().forEach(k => out.push('  '+k+' × '+tags[k]));
     out.push('');
-    out.push('― 異常・注意（'+bad.length+'件）―');
-    bad.slice(0, 3000).forEach(l => out.push('  '+pretty(l)));
+    out.push('― 異常・注意（'+bad.length+'件）―　+h:mm:ss は再生開始からの経過');
+    bad.slice(0, 3000).forEach(l => out.push('  '+pretty(l, base)));
     if (bad.length > 3000) out.push('  …他 '+(bad.length-3000)+'件');
     out.push('');
     out.push('― 全記録 ―');
