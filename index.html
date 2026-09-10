@@ -93,11 +93,6 @@
   </div>
 
   <div class="row">
-    <span class="tag">使うサンプル</span>
-    <span id="lenChecks" style="display:flex;gap:10px;flex-wrap:wrap;"></span>
-  </div>
-
-  <div class="row">
     <button id="genToggle" class="active">gen込み</button>
     <span class="note">クリックで gen込み → genのみ → genなし</span>
     <span id="genList" class="note"></span>
@@ -311,19 +306,11 @@ const AUDIO_DIR = 'assets/audio/';
 const AUDIO_FILES = window.AUDIO_FILES || {};
 const AUDIO_LENGTHS = Object.keys(AUDIO_FILES).sort((a,b)=> Number(a)-Number(b));
 const AUDIO_ALL = AUDIO_LENGTHS.flatMap(k => AUDIO_FILES[k]);
+const AUDIO_LEN_OF = new Map(AUDIO_LENGTHS.flatMap(k => AUDIO_FILES[k].map(f => [f, Number(k)])));
 const XFADE = 0.03;          // 切替のプチノイズ除け（秒）
 function audioURL(f){ return AUDIO_DIR + encodeURIComponent(f); }
 function audioLabel(f){ return f.replace(/\.[a-z0-9]+$/i, ''); }
 
-/* 「使うサンプル」チェックを長さキーから自動生成 */
-const lenChecksEl = document.getElementById('lenChecks');
-AUDIO_LENGTHS.forEach((k)=>{
-  const l = document.createElement('label');
-  l.className = 'pill';
-  l.innerHTML = `<input type="checkbox" value="${k}" checked>${k}sec（${AUDIO_FILES[k].length}）`;
-  lenChecksEl.appendChild(l);
-});
-const lenChecks = [...lenChecksEl.querySelectorAll('input')];
 audioMsg.textContent = AUDIO_ALL.length
   ? `audio ${AUDIO_ALL.length}本（assets/audio/audio_files.js で編集）`
   : 'audio なし（assets/audio/audio_files.js に追加）';
@@ -344,24 +331,18 @@ let audioBag = [];           // まだ引かれていない曲
 let audioBagSig = '';
 let nowAudioLabel = '';
 
-/* エンコーダのパディング等による先頭／末尾の無音を除いた範囲を求める */
-function trimBuffer(buffer){
-  const TH = 0.0005;
-  let start = buffer.length, end = 0;
-  for (let c = 0; c < buffer.numberOfChannels; c++){
-    const d = buffer.getChannelData(c);
-    let i = 0;
-    while (i < start && Math.abs(d[i]) < TH) i++;
-    start = Math.min(start, i);
-    let j = buffer.length - 1;
-    while (j > end && Math.abs(d[j]) < TH) j--;
-    end = Math.max(end, j);
-  }
-  return {
-    buffer,
-    offset: start / buffer.sampleRate,
-    duration: Math.max(0, end + 1 - start) / buffer.sampleRate,
-  };
+/* サンプルは切替グリッドと同じ尺で書き出す前提。先頭・末尾を切り詰めると
+   切替位置からずれるため、デコードしたバッファをそのまま使う。
+   尺の違いと無音ファイルはデコード時に console へ警告を出す。 */
+function checkBuffer(file, buffer){
+  const grid = AUDIO_LEN_OF.get(file);
+  if (grid && Math.abs(buffer.duration - grid) > 0.02)
+    console.warn(`audio 尺ずれ: ${file} は ${buffer.duration.toFixed(3)}秒（想定 ${grid}秒）`);
+  let peak = 0;
+  const d = buffer.getChannelData(0);
+  for (let i = 0; i < d.length; i += 97) peak = Math.max(peak, Math.abs(d[i]));
+  if (peak < 0.001) console.warn(`audio 無音: ${file}（ピーク ${peak.toExponential(1)}）`);
+  return { buffer, offset: 0, duration: buffer.duration };
 }
 
 /* ページを開いた時点でデコードまで済ませる（開始を待たせない） */
@@ -372,7 +353,7 @@ function loadAudio(){
     if (buffers.has(f)) return;
     const raw = await fetched.get(f);
     if (!raw) return;                                   // 取得できなかったものは飛ばす
-    try { buffers.set(f, trimBuffer(await actx.decodeAudioData(raw.slice(0)))); }
+    try { buffers.set(f, checkBuffer(f, await actx.decodeAudioData(raw.slice(0)))); }
     catch(e){ console.warn('audio デコード失敗:', f, e); }
   }));
   return decoding;
@@ -380,9 +361,7 @@ function loadAudio(){
 if (AUDIO_ALL.length) loadAudio();
 
 function audioPool(){
-  return lenChecks.filter(c => c.checked)
-    .flatMap(c => AUDIO_FILES[c.value] || [])
-    .filter(f => buffers.has(f));
+  return AUDIO_ALL.filter(f => buffers.has(f));
 }
 /* 消費型の抽選。exclude（＝いま鳴っている曲）は引かない。 */
 function pickAudio(exclude){
@@ -474,9 +453,6 @@ function stopAudio(){
   nowAudioLabel = '';
   if (actx) actx.suspend();
 }
-/* 「使うサンプル」を変えたら、次の抽選から新しい範囲を使う */
-lenChecks.forEach(c => c.addEventListener('change', ()=>{ audioBag = []; audioBagSig = ''; }));
-
 
 /* =========================================================
    プレビュー・表示
