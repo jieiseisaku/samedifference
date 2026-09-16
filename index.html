@@ -510,21 +510,30 @@ let armed    = null;       // 開始前に仕込んだ cue
 let cuedFor  = 0;          // cue 済みの切替時刻
 let audioCuedFor = 0;      // 音声を予約済みの切替時刻
 let showLoadStatus = false;// 開始時の読み込み表示中か
+let skipAt = 0;            // 準備が間に合わず見送った切替時刻
+let skipCount = 0;         // 同じ組を続けて見送った回数
 let pendingAfter = null;   // cue と一緒に渡した「次の次」
 const liveSides = new Set();   // 開いている表示ページ
 
+/* 全画面の準備が整えば true、時間切れなら false を返す */
 function waitReady(token, limit){
   return new Promise((resolve)=>{
-    if (!liveSides.size){ resolve(); return; }
+    if (!liveSides.size){ resolve(true); return; }
     const w = { token, need:new Set(liveSides), got:new Set(), resolve };
     w.timer = setTimeout(()=>{ if (cueWait === w){
       SDDBG.ev('準備待ち切れ', { 必要:[...w.need].sort().join('/'), 完了:[...w.got].sort().join('/') || 'なし', limit }, '!');
-      cueWait = null; resolve(); } }, Math.max(100, limit));
+      cueWait = null; resolve(false); } }, Math.max(100, limit));
     cueWait = w;
   });
 }
-function noteReady(side, token){
+const durWarned = new Set();
+function noteReady(side, token, item, dur){
   liveSides.add(side);
+  const label = sideLabel(side, item);
+  if (dur && Math.abs(dur - videoGrid()) > 0.2 && !durWarned.has(label)){
+    durWarned.add(label);
+    SDDBG.ev('尺ずれ', { item: label, 尺: +Number(dur).toFixed(2), 周期: videoGrid() }, '!');
+  }
   const w = cueWait;
   if (!w || w.token !== token) return;
   w.got.add(side);
@@ -532,7 +541,7 @@ function noteReady(side, token){
   if (showLoadStatus && w.got.size < w.need.size)
     statusEl.textContent = `読み込み中…（完了 ${[...w.got].sort().join(' / ')}）`;
   if ([...w.need].every(s => w.got.has(s))){
-    clearTimeout(w.timer); cueWait = null; w.resolve();
+    clearTimeout(w.timer); cueWait = null; w.resolve(true);
   }
 }
 function sendCue(token, cur, next){
@@ -546,7 +555,7 @@ ch.onmessage = (e)=>{
     if (armed) sendCue(armed.token, armed.cur, armed.next);   // 後から開いた画面にも先読みさせる
     if (running) ch.postMessage({ type:'sync', Lcur:curL, Rcur:curR, Lnext:nextL, Rnext:nextR, genFiles:GEN_FILES });
   }
-  if (m.type === 'ready') noteReady(m.side, m.token);
+  if (m.type === 'ready') noteReady(m.side, m.token, m.item, m.dur);
 };
 
 /* 開始前の先読み。ペア数が分かった時点で1組引いて読み込ませておく */
@@ -588,7 +597,7 @@ async function start(){
   const at = Date.now() + START_LEAD;       // 映像・音声ともこの時刻ちょうどに始める
   ch.postMessage({ type:'go', token, at });
   lastSwitch = at;
-  cuedFor = 0; audioCuedFor = 0; pendingAfter = null;
+  cuedFor = 0; audioCuedFor = 0; pendingAfter = null; skipAt = 0; skipCount = 0;
   startAudio(at);
   dbgAudioStart(at);
   SDDBG.ev('開始', { at: SDDBG.iso(at), 画面: [...liveSides].sort().join('/') || 'なし',
@@ -620,10 +629,12 @@ function tick(){
   if (now >= boundary - lead && cuedFor !== boundary){
     cuedFor = boundary;
     const token = ++cueToken;
-    pendingAfter = drawNext();
+    if (!pendingAfter) pendingAfter = drawNext();   // 見送りの再試行では引き直さない
     sendCue(token, [nextL, nextR], pendingAfter);
-    waitReady(token, boundary - Date.now() - 100).then(()=>{
-      if (running) ch.postMessage({ type:'go', token, at: boundary });
+    waitReady(token, boundary - Date.now() - 100).then((ok)=>{
+      if (!running) return;
+      if (ok) ch.postMessage({ type:'go', token, at: boundary });
+      else skipAt = boundary;              // 出す指示を送らず、同じ組を次の周期へ回す
     });
   }
 
@@ -634,13 +645,27 @@ function tick(){
   }
 
   if (now >= boundary){
-    SDDBG.ev('切替', { ズレms: now - boundary, 組: sideLabel('L', nextL)+'/'+sideLabel('R', nextR), 周期: videoGrid() },
-             (now - boundary) > 250 ? '?' : '.');
-    curL = nextL; curR = nextR;
-    [nextL, nextR] = pendingAfter || drawNext();
-    pendingAfter = null;
-    lastSwitch = boundary;
-    preview();
+    if (skipAt === boundary){                // 準備が間に合わなかった組は出さずに持ち越す
+      skipCount++;
+      SDDBG.ev('見送り', { 組: sideLabel('L', nextL)+'/'+sideLabel('R', nextR), 連続: skipCount, 周期: videoGrid() }, '!');
+      if (skipCount >= 2){                   // 2周期続けて出せない組は諦めて次の組へ進む
+        SDDBG.ev('組を破棄', { 組: sideLabel('L', nextL)+'/'+sideLabel('R', nextR) }, '!');
+        [nextL, nextR] = pendingAfter || drawNext();
+        pendingAfter = null;
+        skipCount = 0;
+      }
+      skipAt = 0;
+      lastSwitch = boundary;
+    } else {
+      skipCount = 0;
+      SDDBG.ev('切替', { ズレms: now - boundary, 組: sideLabel('L', nextL)+'/'+sideLabel('R', nextR), 周期: videoGrid() },
+               (now - boundary) > 250 ? '?' : '.');
+      curL = nextL; curR = nextR;
+      [nextL, nextR] = pendingAfter || drawNext();
+      pendingAfter = null;
+      lastSwitch = boundary;
+      preview();
+    }
   } else if (now < boundary - lead){
     // 取りこぼし復帰用。切替の直前は cue と競合するため送らない。
     ch.postMessage({ type:'sync', Lcur:curL, Rcur:curR, Lnext:nextL, Rnext:nextR, genFiles:GEN_FILES });

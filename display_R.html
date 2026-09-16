@@ -374,14 +374,14 @@ function preload(next){
 function prepare(item){
   return new Promise((resolve)=>{
     if (isGen(item)){
-      const wait = ()=> ((window.GEN_CLIPS || {})[item] ? resolve() : setTimeout(wait, 100));
+      const wait = ()=> ((window.GEN_CLIPS || {})[item] ? resolve(0) : setTimeout(wait, 100));
       wait();
       return;
     }
     const v = layers[vP];
     const t0 = Date.now();
     let done = false;
-    const finish = ()=>{ if (done) return; done = true; resolve(); };
+    const finish = ()=>{ if (done) return; done = true; resolve(v.duration || 0); };
 
     function primeFirstFrame(){            // デコーダを温めて 0 秒に置く
       let primed = false;
@@ -415,17 +415,18 @@ function prepare(item){
     setTimeout(finish, BUFFER_WAIT + 4000);
     fetchClip(item).then((u)=>{
       if (done) return;
-      if (!u){ finish(); return; }        // 取得できなければ ready を返し、見張りに任せる
+      if (!u){ done = true; resolve(-1); return; }   // 取得できず → ready を返さない（control が見送る）
       setLayer(v, item);
       poll();
     });
   });
 }
 
-/* 指定項目を表示する。空いたレイヤーへ next を先読みする。 */
-function show(cur, next){
+/* 指定項目を表示する。空いたレイヤーへ next を先読みする。
+   force を付けると、同じ項目が出ていても頭から出し直す（go の時刻に左右を揃える） */
+function show(cur, next, force){
   waitEl.style.display = 'none';
-  if (cur === shownNum || cur === targetNum){ preload(next); return; }
+  if (!force && (cur === shownNum || cur === targetNum)){ preload(next); return; }
 
   const myGen = ++gen;
   swapping = false;                          // 進行中の交代は無効化
@@ -539,17 +540,17 @@ ch.onmessage = (e)=>{
     cued = c; lastCueAt = Date.now();
     trimClips([shownNum, c.cur, c.next]);
     if (shownNum === -1) waitEl.textContent = '読み込み中…';
-    prepare(c.cur).then(()=>{
-      if (cued !== c) return;
+    prepare(c.cur).then((dur)=>{
+      if (cued !== c || dur < 0) return;
       if (shownNum === -1) waitEl.textContent = '準備完了　コントロール画面で開始してください';
-      ch.postMessage({ type:'ready', side:SIDE, token:c.token });
+      ch.postMessage({ type:'ready', side:SIDE, token:c.token, item:c.cur, dur });
     });
   }
 
   if (m.type === 'go'){
     const c = cued;
     if (!c || c.token !== m.token) return;
-    fireAt(m.at, ()=>{ if (cued === c) show(c.cur, c.next); });
+    fireAt(m.at, ()=>{ if (cued === c) show(c.cur, c.next, true); });
   }
 
   if (m.type === 'sync'){
