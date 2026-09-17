@@ -60,7 +60,7 @@
     動画 <code>L_01.mp4…</code> / <code>R_01.mp4…</code> は <code>assets/video/</code> に置いてください。ペア数は起動時に自動で数えます（ファイルを増減したら「再検出」）。<br>
     gen クリップ（リアルタイム描画）は <code>gen/</code> フォルダに置き、<code>gen/gen_files.js</code> に列挙すると抽選に混ざります。単体確認は <code>gen/gen_preview.html</code>。<br>
     映像は消費型の抽選です。全ペアを1周するまで同じペアは出ず、1周し終えると新しいサイクルを引き直します（サイクルの継ぎ目でも同じペアは続きません）。<br>
-    音声はスロットA・Bの2本を同時に鳴らします。組が変わるたびに片方だけが入れ替わり、更新されるスロットは組ごとに交互です（A→B→A→B）。開始時はスロットAの1本のみで、2組目からBが入ります。曲も消費型の抽選で、全曲を鳴らし切るまで同じ曲は出ません。<code>assets/audio/</code> のサンプルを長さ別に <code>audio_files.js</code> へ列挙してください。映像側は常にミュートです。<br>
+    音声はスロットA・Bの2本を同時に鳴らします。組が変わるたびに片方だけが入れ替わり、更新されるスロットは組ごとに交互です（A→B→A→B）。開始時はスロットAの1本のみで、2組目からBが入ります。曲も消費型の抽選で、全曲を鳴らし切るまで同じ曲は出ません。曲は <code>assets/audio/</code> に置いたファイルを全て使います（フォルダの中身を起動時に読み取ります）。映像側は常にミュートです。<br>
     <b>fetch を使うため、file:// で直接開くと音声が読み込めません。</b>ローカル確認時はプロジェクト直下で <code>python3 -m http.server</code> を実行し <code>http://localhost:8000/index.html</code> を開いてください（公開時の https では不要）。
   </div>
 
@@ -303,23 +303,47 @@ function sideLabel(side, v){ return isGenItem(v) ? v : `${side}_${num(v)}`; }
    - 切替は映像の切替時刻ちょうど。壁時計を AudioContext の時計に変換して予約する
    ========================================================= */
 const AUDIO_DIR = 'assets/audio/';
-const AUDIO_FILES = window.AUDIO_FILES || {};
-const AUDIO_LENGTHS = Object.keys(AUDIO_FILES).sort((a,b)=> Number(a)-Number(b));
-const AUDIO_ALL = AUDIO_LENGTHS.flatMap(k => AUDIO_FILES[k]);
-const AUDIO_LEN_OF = new Map(AUDIO_LENGTHS.flatMap(k => AUDIO_FILES[k].map(f => [f, Number(k)])));
+const AUDIO_EXT = /\.(wav|mp3|m4a|aac|ogg|oga|opus|flac)$/i;
 const XFADE = 0.03;          // 切替のプチノイズ除け（秒）
+let AUDIO_ALL = [];          // assets/audio/ の中身（自動取得）
+let audioFromFolder = false; // 一覧をフォルダから取れたか
+const fetched = new Map();   // file -> 取得の Promise
 function audioURL(f){ return AUDIO_DIR + encodeURIComponent(f); }
 function audioLabel(f){ return f.replace(/\.[a-z0-9]+$/i, ''); }
 
-audioMsg.textContent = AUDIO_ALL.length
-  ? `audio ${AUDIO_ALL.length}本（assets/audio/audio_files.js で編集）`
-  : 'audio なし（assets/audio/audio_files.js に追加）';
+/* assets/audio/ の中身をそのまま使う。
+   サーバーがフォルダ一覧を返す場合（ローカル配信）はそれを読み、
+   返さない場合（GitHub Pages など）は audio_files.js の記載に切り替える。 */
+async function listAudioFiles(){
+  try {
+    const r = await fetch(AUDIO_DIR, { cache: 'no-store' });
+    if (r.ok){
+      const doc = new DOMParser().parseFromString(await r.text(), 'text/html');
+      const names = [...doc.querySelectorAll('a[href]')]
+        .map(a => decodeURIComponent(a.getAttribute('href').split('?')[0].split('/').pop()))
+        .filter(n => AUDIO_EXT.test(n));
+      if (names.length){
+        audioFromFolder = true;
+        return [...new Set(names)].sort((a,b)=> a.localeCompare(b, 'ja', { numeric: true }));
+      }
+    }
+  } catch(e){ /* 一覧が取れない環境 → 下の記載を使う */ }
+  const listed = window.AUDIO_FILES || {};
+  return Object.keys(listed).sort((a,b)=> Number(a)-Number(b)).flatMap(k => listed[k]);
+}
 
-// 取得はページを開いた時点で先行させる
-const fetched = new Map(AUDIO_ALL.map(f =>
-  [f, fetch(audioURL(f)).then(r => { if(!r.ok) throw new Error(r.status); return r.arrayBuffer(); })
-        .catch(e => { console.warn('audio fetch 失敗:', f, e); return null; })]
-));
+/* 一覧を取ってから、取得とデコードを先行させる */
+const audioReady = listAudioFiles().then((files)=>{
+  AUDIO_ALL = files;
+  const src = audioFromFolder ? 'assets/audio/ の中身' : 'audio_files.js の記載';
+  audioMsg.textContent = AUDIO_ALL.length
+    ? `audio ${AUDIO_ALL.length}本（${src}）`
+    : 'audio なし（assets/audio/ にファイルを置いてください）';
+  AUDIO_ALL.forEach(f => fetched.set(f,
+    fetch(audioURL(f)).then(r => { if(!r.ok) throw new Error(r.status); return r.arrayBuffer(); })
+      .catch(e => { console.warn('audio fetch 失敗:', f, e); return null; })));
+  if (AUDIO_ALL.length) loadAudio();
+});
 
 let actx = null;
 let decoding = null;
@@ -335,9 +359,9 @@ let nowAudioLabel = '';
    切替位置からずれるため、デコードしたバッファをそのまま使う。
    尺の違いと無音ファイルはデコード時に console へ警告を出す。 */
 function checkBuffer(file, buffer){
-  const grid = AUDIO_LEN_OF.get(file);
-  if (grid && Math.abs(buffer.duration - grid) > 0.02)
-    console.warn(`audio 尺ずれ: ${file} は ${buffer.duration.toFixed(3)}秒（想定 ${grid}秒）`);
+  const grid = videoGrid();
+  if (Math.abs(buffer.duration - grid) > 0.02)
+    console.warn(`audio 尺ずれ: ${file} は ${buffer.duration.toFixed(3)}秒（切替周期 ${grid}秒）`);
   let peak = 0;
   const d = buffer.getChannelData(0);
   for (let i = 0; i < d.length; i += 97) peak = Math.max(peak, Math.abs(d[i]));
@@ -352,8 +376,9 @@ function loadAudio(){
   decoding = Promise.all(AUDIO_ALL.map(async (f)=>{
     if (buffers.has(f)) return;
     const raw = await fetched.get(f);
+    fetched.delete(f);                                  // デコード後は生データを残さない
     if (!raw) return;                                   // 取得できなかったものは飛ばす
-    try { buffers.set(f, checkBuffer(f, await actx.decodeAudioData(raw.slice(0)))); }
+    try { buffers.set(f, checkBuffer(f, await actx.decodeAudioData(raw))); }
     catch(e){ console.warn('audio デコード失敗:', f, e); }
   }));
   return decoding;
@@ -431,6 +456,7 @@ function audioAdvance(atMs){
 
 /* デコードと AudioContext の再開まで済ませる。開始時刻を決める前に呼ぶ。 */
 async function prepareAudio(){
+  await audioReady;
   if (!AUDIO_ALL.length) return;
   try { await loadAudio(); await actx.resume(); }
   catch(e){ console.warn('audio 準備失敗', e); }

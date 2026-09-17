@@ -1,12 +1,10 @@
-/* same difference — 音声ファイル一覧
- * assets/audio/ フォルダ内のファイル名を「サンプルの長さ（秒）」ごとに列挙する。
- * index.html が WebAudio で全ファイルを事前デコードし、切替グリッド
- * （15秒 / 30秒）の境界ちょうどに次のサンプルを予約再生する。
- * サンプルがグリッドより短ければループで埋め、長ければ境界でカットする。
- *
- * ここに列挙したファイルは全て抽選の対象になり、ページを開いた時点で
- * 全て取得・デコードされる。使わない長さはキーごと外しておく。
- * 2026年9月：本番は30秒版のみを使用。6秒・15秒は下にコメントで残してある。 */
+/* same difference — 音声ファイル一覧（控え）
+
+ * 通常は index.html が assets/audio/ フォルダの中身をそのまま読み取るため、
+ * このファイルは使われない。フォルダ一覧を返さない配信先（GitHub Pages など）で
+ * 開いたときだけ、ここの記載が使われる。
+ * ローカル配信（run_local.command / run_local.bat）で動かす限り、更新は不要。
+ * 2026年9月：本番は30秒版のみを使用。 */
 window.AUDIO_FILES = {
   30: [
     'fabcafe - 30sec_1.wav',
@@ -19,19 +17,20 @@ window.AUDIO_FILES = {
     'fabcafe - 30sec_8.wav',
     'fabcafe - 30sec_9.wav',
     'fabcafe - 30sec_10.wav',
+    'fabcafe - 30sec_11.wav',
+    'fabcafe - 30sec_12.wav',
+    'fabcafe - 30sec_13.wav',
+    'fabcafe - 30sec_14.wav',
+    'fabcafe - 30sec_15.wav',
+    'fabcafe - 30sec_16.wav',
+    'fabcafe - 30sec_18.wav',
+    'fabcafe - 30sec_19.wav',
+    'fabcafe - 30sec_20.wav',
+    'fabcafe - 30sec_21.wav',
+    'fabcafe - 30sec_22.wav',
+    'fabcafe - 30sec_23.wav',
+    'fabcafe - 30sec_24.wav',
+    'fabcafe - 30sec_25.wav',
+    'fabcafe - 30sec_26.wav',
   ],
-
-  /* 使う場合はコメントを外す
-  6: [
-    'fabcafe - 6sec_1.wav',
-    'fabcafe - 6sec_2.wav',
-    'fabcafe - 6sec_3.wav',
-    'fabcafe - 6sec_4.wav',
-  ],
-  15: [
-    'fabcafe - 15sec_1.wav',
-    'fabcafe - 15sec_2.wav',
-    'fabcafe - 15sec_3.wav',
-  ],
-  */
 };
