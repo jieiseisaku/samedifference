@@ -517,7 +517,7 @@ function preview(){
    1) cue … 次に出す項目を伝える。表示ページは読み込みだけ済ませて ready を返す
    2) go  … 実際に出す壁時計の時刻を伝える。L / R が同じ時刻に再生を始める
    時刻は同一マシン上の Date.now() を共有するため、左右のズレが出ない。 */
-const START_LEAD  = 300;    // 準備完了から再生開始までの余裕（ms）
+const START_LEAD  = 1200;   // 準備完了から再生開始までの余裕（ms）開いた直後の重さを吸収する
 const PREP_LEAD   = 20000;  // 切替の何ms前に cue を送るか（実尺の読み込みを待たせる）
 const PREP_MIN    = 1200;   // cue の下限（周期が短いとき用）
 const PREP_TAIL   = 5000;   // 周期のうち sync に残す時間（ms）

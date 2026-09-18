@@ -76,6 +76,8 @@ const LOOP_LEAD   = 0.08;     // 相方を先行スタートする余裕（秒�
 const SWAP_TIMEOUT  = 150;    // 交代をあきらめるまで（ms）。遅れた交代は必ず捨てる。
 const HEAL_MS       = 250;    // 見張りの間隔（ms）
 const BUFFER_WAIT   = 30000;  // 読み込みを待つ上限（ms）
+const PAINT_CAP     = 250;    // 新しい絵が出るのを待つ上限（ms）
+const TRIM_DELAY    = 1000;   // 切替の後、不要な動画を捨てるまでの待ち（ms）
 
 /* =========================================================
    動画の取得（fetch で丸ごと取ってから video に渡す）
@@ -185,6 +187,15 @@ function primeLayer(v){
     if (Date.now() - t0 < 10000) setTimeout(wait, 100);
   };
   wait();
+}
+/* 実際に画が出たタイミングを拾う。requestVideoFrameCallback は表に出ている
+   （不透明度1の）要素なら presentation のたびに呼ばれる。念のため上限で打ち切る。 */
+function onPainted(v, cb, cap){
+  let done = false;
+  const fire = ()=>{ if (done) return; done = true; cb(); };
+  if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(()=> fire());
+  else requestAnimationFrame(()=> requestAnimationFrame(fire));
+  setTimeout(fire, cap || PAINT_CAP);
 }
 function hideAllExcept(keep){
   layers.forEach((v)=>{ if (v !== keep){ v.classList.remove('show'); v.classList.remove('top'); } });
@@ -465,6 +476,7 @@ function show(cur, next, force){
     if (myGen !== gen) return;
     if (showV.readyState < 2){ setTimeout(reveal, 50); return; }   // フレームが無いうちは出さない
     playSafe(showV);
+    layers.forEach((v)=>{ if (v !== showV) v.classList.remove('top'); });  // 前面は新しい1枚だけ
     showV.classList.add('top');              // 前面に重ねてから表示する
     showV.classList.add('show');
     const oldA = vA, oldB = vB;
@@ -475,7 +487,9 @@ function show(cur, next, force){
       primeLayer(layers[vB]);                // 最初のループから交代できるよう温めておく
     }
     genClipId = null;
-    requestAnimationFrame(()=> requestAnimationFrame(()=>{
+    /* 新しい動画が実際に1フレーム描かれ、それが画面に出た次のフレームで元を消す。
+       先に消すと、まだ描かれていない前面レイヤーが一瞬黒く見える。 */
+    onPainted(showV, ()=> requestAnimationFrame(()=>{
       if (myGen !== gen) return;
       [oldA, oldB].forEach((i)=>{
         layers[i].classList.remove('show');
@@ -486,8 +500,10 @@ function show(cur, next, force){
       requestAnimationFrame(()=>{
         [oldA, oldB].forEach((i)=>{ try{ layers[i].currentTime = 0; }catch(e){} layers[i].loop = true; });
       });
-      preload(next);
-      trimClips([cur, next]);
+      /* 先読みの割り当ても、捨てる処理も切替から離す。
+         直前まで表に出ていたレイヤーの src を触ると、消えるのが画面に反映される前に
+         中身が空になり、1フレームだけ黒く見えることがある。 */
+      setTimeout(()=>{ preload(next); trimClips([cur, next]); }, TRIM_DELAY);
       switching = false;
     }));
   };
